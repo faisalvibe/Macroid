@@ -26,14 +26,13 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
       - name: Build Android APKs
         working-directory: android
-        run: ./gradlew assembleDebug assembleRelease --stacktrace
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug assembleRelease --stacktrace --no-daemon
 
-      - name: Rename APKs
+      - name: Prepare artifacts
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk Macroid-debug.apk
           cp android/app/build/outputs/apk/release/app-release-unsigned.apk Macroid-release.apk
@@ -43,40 +42,38 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           else
             echo "tag=v1.1.0" >> $GITHUB_OUTPUT
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Macroid ${{ steps.tag.outputs.tag }}
-          body: |
-            ## Macroid ${{ steps.tag.outputs.tag }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          gh release create "$TAG" \
+            --title "Macroid $TAG" \
+            --notes "## Macroid $TAG
 
-            WiFi clipboard sync between Mac and Android.
+          WiFi clipboard sync between Mac and Android.
 
-            ### Downloads
-            - **Macroid-debug.apk** - Android debug build (can install directly)
-            - **Macroid-release.apk** - Android release build (unsigned)
+          ### Downloads
+          - **Macroid-debug.apk** - Android debug build (can install directly)
+          - **Macroid-release.apk** - Android release build (unsigned)
 
-            ### What's New
-            - Origin-based sync loop prevention
-            - Clipboard history (last 20 items)
-            - Retry logic with exponential backoff
-            - Foreground service for background sync (Android)
-            - Structured logging throughout
-            - Request size limits (1MB max)
-            - Concurrent fallback discovery (Mac)
-            - Improved error handling
+          ### What's New
+          - Origin-based sync loop prevention
+          - Clipboard history (last 20 items)
+          - Retry logic with exponential backoff
+          - Foreground service for background sync (Android)
+          - Structured logging throughout
+          - Request size limits (1MB max)
+          - Improved error handling
 
-            ### Installation
-            **Android:** Download `Macroid-debug.apk`, enable "Install from unknown sources", install.
-          files: |
-            Macroid-debug.apk
+          ### Installation
+          **Android:** Download Macroid-debug.apk, enable Install from unknown sources, install." \
+            Macroid-debug.apk \
             Macroid-release.apk
-          draft: false
-          prerelease: false
