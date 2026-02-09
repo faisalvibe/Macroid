@@ -16,6 +16,8 @@ class SyncServer {
     private let maxBodySize = 1_048_576 // 1MB
     private let maxImageSize = 10_485_760 // 10MB
     private(set) var actualPort: UInt16
+    var deviceInfoProvider: (() -> [String: Any])?
+    var onDeviceRegistered: ((DeviceInfo) -> Void)?
 
     init(fingerprint: String) {
         self.deviceFingerprint = fingerprint
@@ -133,10 +135,74 @@ class SyncServer {
             handleClipboardPost(request: request, connection: connection)
         } else if method == "POST" && path == "/api/clipboard/image" {
             handleImagePost(request: request, connection: connection)
+        } else if method == "GET" && path == "/api/localsend/v2/info" {
+            handleInfoGet(connection: connection)
         } else if method == "POST" && path.hasPrefix("/api/localsend/v2/register") {
-            sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
+            handleRegisterPost(request: request, connection: connection)
         } else {
             sendResponse(connection: connection, status: 404, body: "{\"error\":\"not found\"}")
+        }
+    }
+
+    private func handleInfoGet(connection: NWConnection) {
+        let info = deviceInfoProvider?() ?? [
+            "alias": Host.current().localizedName ?? "Mac",
+            "version": "2.1",
+            "deviceType": "desktop",
+            "fingerprint": deviceFingerprint,
+            "download": false
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: info),
+           let body = String(data: data, encoding: .utf8) {
+            sendResponse(connection: connection, status: 200, body: body)
+        } else {
+            sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
+        }
+    }
+
+    private func handleRegisterPost(request: String, connection: NWConnection) {
+        let parts = request.components(separatedBy: "\r\n\r\n")
+        var responseInfo = deviceInfoProvider?() ?? [
+            "alias": Host.current().localizedName ?? "Mac",
+            "version": "2.1",
+            "deviceType": "desktop",
+            "fingerprint": deviceFingerprint
+        ]
+
+        if parts.count >= 2 {
+            let bodyString = parts[1]
+            if let bodyData = bodyString.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
+                let fp = json["fingerprint"] as? String ?? ""
+                let alias = json["alias"] as? String ?? "Unknown"
+                let deviceType = json["deviceType"] as? String ?? "unknown"
+                let port = json["port"] as? Int ?? Int(Discovery.port)
+
+                if !fp.isEmpty && fp != deviceFingerprint && deviceType == "mobile" {
+                    // Extract remote IP from connection
+                    var remoteAddress = "unknown"
+                    if case .hostPort(let host, _) = connection.currentPath?.remoteEndpoint {
+                        remoteAddress = "\(host)"
+                    }
+
+                    let device = DeviceInfo(
+                        alias: alias,
+                        deviceType: deviceType,
+                        fingerprint: fp,
+                        address: remoteAddress,
+                        port: port
+                    )
+                    log.info("Device registered via HTTP: \(device.alias) at \(device.address)")
+                    onDeviceRegistered?(device)
+                }
+            }
+        }
+
+        if let data = try? JSONSerialization.data(withJSONObject: responseInfo),
+           let body = String(data: data, encoding: .utf8) {
+            sendResponse(connection: connection, status: 200, body: body)
+        } else {
+            sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
         }
     }
 

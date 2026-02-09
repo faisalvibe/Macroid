@@ -21,6 +21,7 @@ class SyncManager: ObservableObject {
     @Published var connectedDevice: DeviceInfo?
     @Published var clipboardHistory: [String] = []
     @Published var localIPAddress: String = ""
+    @Published var connectionStatus: String = ""
 
     private var discovery: Discovery?
     private var syncServer: SyncServer?
@@ -47,8 +48,20 @@ class SyncManager: ObservableObject {
         self.fingerprint = fp
         self.localIPAddress = disc.getLocalIPAddress() ?? "Unknown"
 
-        syncServer = SyncServer(fingerprint: fp)
-        syncServer?.start(onClipboardReceived: { [weak self] text in
+        let server = SyncServer(fingerprint: fp)
+        server.deviceInfoProvider = { disc.getDeviceInfo() }
+        self.syncServer = server
+
+        server.onDeviceRegistered = { [weak self] device in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.connectedDevice = device
+                self.syncClient = SyncClient(peer: device, fingerprint: fp)
+                log.info("Device registered via HTTP: \(device.alias) at \(device.address)")
+            }
+        }
+
+        server.start(onClipboardReceived: { [weak self] text in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isUpdatingFromRemote = true
@@ -67,7 +80,7 @@ class SyncManager: ObservableObject {
         })
 
         // Propagate actual server port to discovery announcements
-        if let actualPort = syncServer?.actualPort {
+        if let actualPort = server.actualPort as UInt16? {
             disc.announcePort = actualPort
         }
 
@@ -133,8 +146,11 @@ class SyncManager: ObservableObject {
     }
 
     func connectByIP(_ ip: String, port: Int = Int(Discovery.port)) {
+        connectionStatus = "Connecting..."
+
         guard let url = URL(string: "http://\(ip):\(port)/api/ping") else {
             log.error("Invalid IP address: \(ip)")
+            connectionStatus = "Failed: invalid IP"
             return
         }
 
@@ -161,8 +177,10 @@ class SyncManager: ObservableObject {
                     )
                     self.connectedDevice = device
                     self.syncClient = SyncClient(peer: device, fingerprint: self.fingerprint)
+                    self.connectionStatus = "Connected to \(ip)"
                     log.info("Manually connected to \(ip):\(port)")
                 } else {
+                    self.connectionStatus = "Failed to connect to \(ip)"
                     log.warning("Failed to connect to \(ip):\(port)")
                 }
             }

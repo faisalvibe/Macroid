@@ -1,6 +1,5 @@
 package com.macroid.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -16,12 +15,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -36,8 +34,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,6 +48,7 @@ fun MainScreen(
     isSearching: Boolean,
     clipboardHistory: List<String>,
     localIP: String,
+    connectionStatus: String,
     onTextChanged: (String) -> Unit,
     onHistoryItemClicked: (String) -> Unit,
     onClearHistory: () -> Unit,
@@ -123,6 +122,7 @@ fun MainScreen(
             connectedDevice = connectedDevice,
             isSearching = isSearching,
             localIP = localIP,
+            connectionStatus = connectionStatus,
             onConnectByIP = onConnectByIP
         )
     }
@@ -275,6 +275,7 @@ private fun StatusBar(
     connectedDevice: DeviceInfo?,
     isSearching: Boolean,
     localIP: String,
+    connectionStatus: String,
     onConnectByIP: (String) -> Unit
 ) {
     var showConnectDialog by remember { mutableStateOf(false) }
@@ -288,23 +289,58 @@ private fun StatusBar(
             },
             title = { Text("Connect by IP") },
             text = {
-                OutlinedTextField(
-                    value = manualIP,
-                    onValueChange = { manualIP = it },
-                    label = { Text("IP address") },
-                    placeholder = { Text("192.168.1.100") },
-                    singleLine = true
-                )
+                Column {
+                    Text(
+                        text = "My IP: $localIP",
+                        style = TextStyle(
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = manualIP,
+                        onValueChange = { manualIP = it },
+                        label = { Text("Device IP address") },
+                        placeholder = { Text("192.168.1.100") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    if (connectionStatus.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (connectionStatus == "Connecting...") {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            Text(
+                                text = connectionStatus,
+                                style = TextStyle(
+                                    fontSize = 12.sp,
+                                    color = when {
+                                        connectionStatus.startsWith("Connected") -> Color(0xFF34C759)
+                                        connectionStatus.startsWith("Failed") -> Color(0xFFFF3B30)
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            )
+                        }
+                    }
+                }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val ip = manualIP.trim()
-                    if (ip.isNotEmpty()) {
-                        onConnectByIP(ip)
-                    }
-                    showConnectDialog = false
-                    manualIP = ""
-                }) { Text("Connect") }
+                TextButton(
+                    onClick = {
+                        val ip = manualIP.trim()
+                        if (ip.isNotEmpty()) {
+                            onConnectByIP(ip)
+                        }
+                    },
+                    enabled = connectionStatus != "Connecting..."
+                ) { Text("Connect") }
             },
             dismissButton = {
                 TextButton(onClick = {
@@ -351,7 +387,7 @@ private fun StatusBar(
             )
         } else {
             Text(
-                text = "My IP: $localIP",
+                text = if (isSearching) "Searching for devices..." else "Not connected",
                 style = TextStyle(
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant

@@ -21,7 +21,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-class SyncServer(private val deviceFingerprint: String) {
+class SyncServer(
+    private val deviceFingerprint: String,
+    private val deviceInfoProvider: (() -> Map<String, Any>)? = null
+) {
 
     companion object {
         private const val TAG = "SyncServer"
@@ -33,6 +36,7 @@ class SyncServer(private val deviceFingerprint: String) {
     private val gson = Gson()
     private var lastClipboard = ""
     private var lastTimestamp = 0L
+    var onDeviceRegistered: ((DeviceInfo) -> Unit)? = null
 
     fun start(onClipboardReceived: (String) -> Unit, onImageReceived: (ByteArray) -> Unit = {}) {
         CoroutineScope(Dispatchers.IO).launch {
@@ -57,7 +61,6 @@ class SyncServer(private val deviceFingerprint: String) {
                                 val origin = data["origin"] as? String ?: ""
 
                                 if (origin == deviceFingerprint) {
-                                    Log.d(TAG, "Ignoring echo from self")
                                     call.respond(HttpStatusCode.OK, mapOf("status" to "ignored"))
                                     return@post
                                 }
@@ -73,21 +76,12 @@ class SyncServer(private val deviceFingerprint: String) {
                                 call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))
                             } catch (e: Exception) {
                                 Log.e(TAG, "Error processing clipboard POST", e)
-                                call.respond(
-                                    HttpStatusCode.BadRequest,
-                                    mapOf("error" to (e.message ?: "unknown"))
-                                )
+                                call.respond(HttpStatusCode.BadRequest, mapOf("error" to (e.message ?: "unknown")))
                             }
                         }
 
                         get("/api/clipboard") {
-                            call.respond(
-                                HttpStatusCode.OK,
-                                mapOf(
-                                    "text" to lastClipboard,
-                                    "timestamp" to lastTimestamp
-                                )
-                            )
+                            call.respond(HttpStatusCode.OK, mapOf("text" to lastClipboard, "timestamp" to lastTimestamp))
                         }
 
                         get("/api/ping") {
@@ -124,8 +118,53 @@ class SyncServer(private val deviceFingerprint: String) {
                             }
                         }
 
+                        // LocalSend v2 info endpoint
+                        get("/api/localsend/v2/info") {
+                            val info = deviceInfoProvider?.invoke() ?: mapOf(
+                                "alias" to (android.os.Build.MODEL ?: "Android"),
+                                "version" to "2.1",
+                                "deviceModel" to (android.os.Build.MODEL ?: "Unknown"),
+                                "deviceType" to "mobile",
+                                "fingerprint" to deviceFingerprint,
+                                "download" to false
+                            )
+                            call.respond(HttpStatusCode.OK, info)
+                        }
+
+                        // LocalSend v2 register endpoint
                         post("/api/localsend/v2/register") {
-                            call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))
+                            try {
+                                val body = call.receiveText()
+                                val data = gson.fromJson(body, Map::class.java)
+                                val fp = data["fingerprint"] as? String ?: ""
+                                val alias = data["alias"] as? String ?: "Unknown"
+                                val deviceType = data["deviceType"] as? String ?: "unknown"
+                                val port = (data["port"] as? Double)?.toInt() ?: Discovery.PORT
+
+                                if (fp.isNotEmpty() && fp != deviceFingerprint) {
+                                    val remoteAddress = call.request.local.remoteAddress
+                                    val device = DeviceInfo(
+                                        alias = alias,
+                                        deviceType = deviceType,
+                                        fingerprint = fp,
+                                        address = remoteAddress,
+                                        port = port
+                                    )
+                                    Log.d(TAG, "Device registered via HTTP: ${device.alias} at ${device.address}")
+                                    onDeviceRegistered?.invoke(device)
+                                }
+
+                                val myInfo = deviceInfoProvider?.invoke() ?: mapOf(
+                                    "alias" to (android.os.Build.MODEL ?: "Android"),
+                                    "version" to "2.1",
+                                    "deviceType" to "mobile",
+                                    "fingerprint" to deviceFingerprint
+                                )
+                                call.respond(HttpStatusCode.OK, myInfo)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error processing register", e)
+                                call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))
+                            }
                         }
                     }
                 }

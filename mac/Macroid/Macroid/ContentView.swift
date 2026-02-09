@@ -30,24 +30,44 @@ struct ContentView: View {
             Text("Connect by IP")
                 .font(.system(size: 16, weight: .medium))
 
-            TextField("Enter IP address (e.g. 192.168.1.100)", text: $manualIP)
+            Text("My IP: \(syncManager.localIPAddress)")
+                .font(.system(size: 13))
+                .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+
+            TextField("Enter device IP address (e.g. 192.168.1.100)", text: $manualIP)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 300)
+
+            if !syncManager.connectionStatus.isEmpty {
+                HStack(spacing: 6) {
+                    if syncManager.connectionStatus == "Connecting..." {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                    }
+                    Text(syncManager.connectionStatus)
+                        .font(.system(size: 12))
+                        .foregroundColor(
+                            syncManager.connectionStatus.hasPrefix("Connected") ? .green :
+                            syncManager.connectionStatus.hasPrefix("Failed") ? .red :
+                            (colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+                        )
+                }
+            }
 
             HStack(spacing: 12) {
                 Button("Cancel") {
                     showConnectSheet = false
                     manualIP = ""
+                    syncManager.connectionStatus = ""
                 }
                 Button("Connect") {
                     let ip = manualIP.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !ip.isEmpty {
                         syncManager.connectByIP(ip)
                     }
-                    showConnectSheet = false
-                    manualIP = ""
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(syncManager.connectionStatus == "Connecting...")
             }
         }
         .padding(24)
@@ -198,7 +218,7 @@ struct ContentView: View {
                             : Color(hex: "8E8E93").opacity(0.6)
                     )
             } else {
-                Text("My IP: \(syncManager.localIPAddress)")
+                Text("Searching for devices...")
                     .font(.system(size: 12))
                     .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
 

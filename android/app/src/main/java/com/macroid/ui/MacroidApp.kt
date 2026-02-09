@@ -21,8 +21,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.HttpURLConnection
-import java.net.Inet4Address
-import java.net.NetworkInterface
 import java.net.URL
 
 private const val TAG = "MacroidApp"
@@ -38,8 +36,11 @@ fun MacroidApp() {
         var clipboardText by remember { mutableStateOf("") }
         var connectedDevice by remember { mutableStateOf<DeviceInfo?>(null) }
         var isSearching by remember { mutableStateOf(true) }
+        var connectionStatus by remember { mutableStateOf("") }
         val clipboardHistory = remember { mutableStateListOf<String>() }
-        val localIP = remember { getLocalIPAddress() }
+
+        val discovery = remember { Discovery(context) }
+        val localIP = remember { discovery.getLocalIPAddress() ?: "Unknown" }
 
         // Load persisted history on first composition
         val prefs = remember { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
@@ -53,12 +54,27 @@ fun MacroidApp() {
             true
         }
 
-        val discovery = remember { Discovery(context) }
-        val syncServer = remember { SyncServer(discovery.fingerprint) }
+        val syncServer = remember { SyncServer(discovery.fingerprint, deviceInfoProvider = { discovery.getDeviceInfo() }) }
         val syncClient = remember { SyncClient(discovery.fingerprint) }
         val clipboardMonitor = remember { ClipboardMonitor(context) }
 
         DisposableEffect(Unit) {
+            val onDeviceFound = { device: DeviceInfo ->
+                connectedDevice = device
+                isSearching = false
+                syncClient.setPeer(device)
+            }
+
+            // Wire up SyncServer to also trigger discovery via register endpoint
+            syncServer.onDeviceRegistered = { device ->
+                if (device.deviceType != "mobile") {
+                    CoroutineScope(Dispatchers.Main).launch {
+                        onDeviceFound(device)
+                        Log.d(TAG, "Device registered via HTTP: ${device.alias}")
+                    }
+                }
+            }
+
             syncServer.start(onClipboardReceived = { incomingText ->
                 if (incomingText != clipboardText) {
                     clipboardText = incomingText
@@ -72,9 +88,7 @@ fun MacroidApp() {
             })
 
             discovery.startDiscovery { device ->
-                connectedDevice = device
-                isSearching = false
-                syncClient.setPeer(device)
+                onDeviceFound(device)
             }
 
             clipboardMonitor.startMonitoring(onClipboardChanged = { newText ->
@@ -119,6 +133,7 @@ fun MacroidApp() {
             isSearching = isSearching,
             clipboardHistory = clipboardHistory,
             localIP = localIP,
+            connectionStatus = connectionStatus,
             onTextChanged = { newText ->
                 clipboardText = newText
                 clipboardMonitor.writeToClipboard(newText)
@@ -134,28 +149,27 @@ fun MacroidApp() {
                 prefs.edit().remove("${HISTORY_KEY}_ordered").apply()
             },
             onConnectByIP = { ip ->
+                connectionStatus = "Connecting..."
                 CoroutineScope(Dispatchers.IO).launch {
-                    val reachable = pingDevice(DeviceInfo(
+                    val device = DeviceInfo(
                         alias = ip,
                         deviceType = "desktop",
                         fingerprint = "manual",
                         address = ip,
                         port = Discovery.PORT
-                    ))
-                    if (reachable) {
-                        val device = DeviceInfo(
-                            alias = ip,
-                            deviceType = "desktop",
-                            fingerprint = "manual",
-                            address = ip,
-                            port = Discovery.PORT
-                        )
-                        connectedDevice = device
-                        isSearching = false
-                        syncClient.setPeer(device)
-                        Log.d(TAG, "Manually connected to $ip")
-                    } else {
-                        Log.w(TAG, "Failed to connect to $ip")
+                    )
+                    val reachable = pingDevice(device)
+                    CoroutineScope(Dispatchers.Main).launch {
+                        if (reachable) {
+                            connectedDevice = device
+                            isSearching = false
+                            syncClient.setPeer(device)
+                            connectionStatus = "Connected to $ip"
+                            Log.d(TAG, "Manually connected to $ip")
+                        } else {
+                            connectionStatus = "Failed to connect to $ip"
+                            Log.w(TAG, "Failed to connect to $ip")
+                        }
                     }
                 }
             }
@@ -175,17 +189,6 @@ private fun pingDevice(device: DeviceInfo): Boolean {
         response == "pong"
     } catch (e: Exception) {
         false
-    }
-}
-
-private fun getLocalIPAddress(): String {
-    return try {
-        NetworkInterface.getNetworkInterfaces()?.toList()
-            ?.flatMap { it.inetAddresses.toList() }
-            ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
-            ?.hostAddress ?: "Unknown"
-    } catch (e: Exception) {
-        "Unknown"
     }
 }
 
