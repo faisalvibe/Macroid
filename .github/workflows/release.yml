@@ -1,22 +1,43 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Release tag (e.g. v1.1.0)'
-        required: true
+  workflow_run:
+    workflows: ["Build Android APK"]
+    types: [completed]
+    branches: [ main, 'claude/*' ]
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   release:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Create Release
+
+      - name: Download Debug APK
+        uses: actions/download-artifact@v4
+        with:
+          name: macroid-debug
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Download Release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: macroid-release
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Manual release trigger for ${{ github.event.inputs.tag_name }}"
+          TAG="v1.1.0"
+          mv app-debug.apk Macroid-debug.apk
+          mv app-release-unsigned.apk Macroid-release.apk
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          sleep 2
+          gh release create "$TAG" --title "Macroid $TAG" --generate-notes Macroid-debug.apk Macroid-release.apk
