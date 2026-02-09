@@ -159,7 +159,7 @@ class Discovery {
                     onDeviceFound(device)
                 }
                 task.resume()
-                semaphore.wait(timeout: .now() + 1.0)
+                _ = semaphore.wait(timeout: .now() + 1.0)
                 session.invalidateAndCancel()
             }
         }

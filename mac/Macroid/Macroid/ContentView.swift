@@ -64,7 +64,7 @@ struct ContentView: View {
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
                 .foregroundColor(colorScheme == .dark ? Color(hex: "F2F2F7") : Color(hex: "1C1C1E"))
-                .onChange(of: syncManager.clipboardText) { _, newValue in
+                .onChange(of: syncManager.clipboardText) { newValue in
                     syncManager.onTextEdited(newValue)
                 }
         }

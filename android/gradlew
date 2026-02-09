@@ -154,7 +154,7 @@ fi
 #     Put://
 #     DEFAULT_JVM_OPTS://
 #     to define JVM options as Gradle properties.
-DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+DEFAULT_JVM_OPTS='-Xmx64m -Xms64m'
 
 # Collect all arguments for the java command://
 #   * Gradle wrapper main class (org.gradle.wrapper.GradleWrapperMain)
