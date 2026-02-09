@@ -10,7 +10,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -43,15 +42,32 @@ jobs:
           name: macroid-release
           path: android/app/build/outputs/apk/release/app-release-unsigned.apk
 
+  release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Debug APK
+        uses: actions/download-artifact@v4
+        with:
+          name: macroid-debug
+
+      - name: Download Release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: macroid-release
+
       - name: Create GitHub Release
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/')
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v1.1.0"
-          cp android/app/build/outputs/apk/debug/app-debug.apk Macroid-debug.apk
-          cp android/app/build/outputs/apk/release/app-release-unsigned.apk Macroid-release.apk
+          mv app-debug.apk Macroid-debug.apk
+          mv app-release-unsigned.apk Macroid-release.apk
           gh release delete "$TAG" --yes 2>/dev/null || true
           sleep 2
           gh release create "$TAG" --title "Macroid $TAG" --generate-notes Macroid-debug.apk Macroid-release.apk
