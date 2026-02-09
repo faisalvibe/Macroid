@@ -46,8 +46,10 @@ class SyncServer {
                 switch state {
                 case .ready:
                     self?.actualPort = self?.port ?? Discovery.port
+                    AppLog.add("[SyncServer] Listening on port \(self?.port ?? 0)")
                     log.info("Server listening on port \(self?.port ?? 0)")
                 case .failed(let error):
+                    AppLog.add("[SyncServer] ERROR: Server failed: \(error.localizedDescription)")
                     log.error("Server failed: \(error.localizedDescription)")
                 default:
                     break

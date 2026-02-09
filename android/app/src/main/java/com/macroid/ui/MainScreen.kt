@@ -36,10 +36,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.macroid.network.DeviceInfo
+import com.macroid.util.AppLog
 
 @Composable
 fun MainScreen(
@@ -54,7 +58,8 @@ fun MainScreen(
     onClearHistory: () -> Unit,
     onConnectByIP: (String) -> Unit
 ) {
-    var showHistory by remember { mutableStateOf(false) }
+    // 0 = editor, 1 = history, 2 = logs
+    var currentTab by remember { mutableStateOf(0) }
 
     Column(
         modifier = Modifier
@@ -63,8 +68,8 @@ fun MainScreen(
     ) {
         TopBar(
             isConnected = connectedDevice != null,
-            showHistory = showHistory,
-            onToggleHistory = { showHistory = !showHistory }
+            currentTab = currentTab,
+            onTabChanged = { currentTab = it }
         )
 
         HorizontalDivider(
@@ -72,44 +77,50 @@ fun MainScreen(
             thickness = 0.5.dp
         )
 
-        if (showHistory) {
-            HistoryPanel(
-                history = clipboardHistory,
-                onItemClicked = { text ->
-                    onHistoryItemClicked(text)
-                    showHistory = false
-                },
-                onClear = onClearHistory,
-                modifier = Modifier.weight(1f)
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 16.dp)
-            ) {
-                if (clipboardText.isEmpty()) {
-                    Text(
-                        text = "Copy something on either device...",
-                        style = TextStyle(
-                            fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+        when (currentTab) {
+            1 -> {
+                HistoryPanel(
+                    history = clipboardHistory,
+                    onItemClicked = { text ->
+                        onHistoryItemClicked(text)
+                        currentTab = 0
+                    },
+                    onClear = onClearHistory,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            2 -> {
+                LogPanel(modifier = Modifier.weight(1f))
+            }
+            else -> {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 16.dp)
+                ) {
+                    if (clipboardText.isEmpty()) {
+                        Text(
+                            text = "Copy something on either device...",
+                            style = TextStyle(
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            )
                         )
+                    }
+
+                    BasicTextField(
+                        value = clipboardText,
+                        onValueChange = onTextChanged,
+                        modifier = Modifier.fillMaxSize(),
+                        textStyle = TextStyle(
+                            fontSize = 16.sp,
+                            lineHeight = 24.sp,
+                            color = MaterialTheme.colorScheme.onBackground
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
                     )
                 }
-
-                BasicTextField(
-                    value = clipboardText,
-                    onValueChange = onTextChanged,
-                    modifier = Modifier.fillMaxSize(),
-                    textStyle = TextStyle(
-                        fontSize = 16.sp,
-                        lineHeight = 24.sp,
-                        color = MaterialTheme.colorScheme.onBackground
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
-                )
             }
         }
 
@@ -131,8 +142,8 @@ fun MainScreen(
 @Composable
 private fun TopBar(
     isConnected: Boolean,
-    showHistory: Boolean,
-    onToggleHistory: () -> Unit
+    currentTab: Int,
+    onTabChanged: (Int) -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -151,14 +162,20 @@ private fun TopBar(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        TextButton(onClick = onToggleHistory) {
-            Text(
-                text = if (showHistory) "Editor" else "History",
-                style = TextStyle(
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.primary
+        val tabs = listOf("Editor", "History", "Logs")
+        tabs.forEachIndexed { index, label ->
+            TextButton(onClick = { onTabChanged(index) }) {
+                Text(
+                    text = label,
+                    style = TextStyle(
+                        fontSize = 14.sp,
+                        color = if (currentTab == index)
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
                 )
-            )
+            }
         }
 
         Spacer(modifier = Modifier.width(8.dp))
@@ -268,6 +285,69 @@ private fun HistoryItem(text: String, onClick: () -> Unit) {
         thickness = 0.5.dp,
         modifier = Modifier.padding(horizontal = 16.dp)
     )
+}
+
+@Composable
+private fun LogPanel(modifier: Modifier = Modifier) {
+    val clipboardManager = LocalClipboardManager.current
+    val logEntries = AppLog.entries
+
+    Column(modifier = modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${logEntries.size} entries",
+                style = TextStyle(
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            TextButton(onClick = {
+                clipboardManager.setText(AnnotatedString(AppLog.allText()))
+            }) {
+                Text(
+                    text = "Copy All",
+                    style = TextStyle(fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                )
+            }
+            TextButton(onClick = { AppLog.clear() }) {
+                Text(
+                    text = "Clear",
+                    style = TextStyle(fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+                )
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 12.dp),
+            reverseLayout = false
+        ) {
+            items(logEntries) { entry ->
+                Text(
+                    text = entry,
+                    style = TextStyle(
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = when {
+                            entry.contains("ERROR") || entry.contains("FAILED") -> Color(0xFFFF3B30)
+                            entry.contains("OK") || entry.contains("success", ignoreCase = true) || entry.contains("Connected") -> Color(0xFF34C759)
+                            else -> MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f)
+                        }
+                    ),
+                    modifier = Modifier.padding(vertical = 1.dp)
+                )
+            }
+        }
+    }
 }
 
 @Composable

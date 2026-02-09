@@ -40,6 +40,7 @@ class Discovery {
     }
 
     func startDiscovery(onDeviceFound: @escaping (DeviceInfo) -> Void) {
+        AppLog.add("[Discovery] Starting with fingerprint: \(String(fingerprint))")
         log.info("Starting discovery with fingerprint: \(String(self.fingerprint))")
         startMulticastListener(onDeviceFound: onDeviceFound)
         startAnnouncing()
@@ -77,9 +78,11 @@ class Discovery {
 
             groupConnection.start(queue: queue)
             self.multicastGroup = groupConnection
+            AppLog.add("[Discovery] Multicast listener started on \(Discovery.multicastGroup):\(Discovery.port)")
             log.info("Multicast listener started on \(Discovery.multicastGroup):\(Discovery.port)")
 
         } catch {
+            AppLog.add("[Discovery] ERROR: Multicast setup failed: \(error.localizedDescription)")
             log.error("Multicast setup failed: \(error.localizedDescription), using fallback discovery")
             startFallbackDiscovery(onDeviceFound: onDeviceFound)
         }
@@ -111,6 +114,7 @@ class Discovery {
             port: port
         )
 
+        AppLog.add("[Discovery] Found device via multicast: \(device.alias) at \(device.address):\(device.port)")
         log.info("Found device via multicast: \(device.alias) at \(device.address):\(device.port)")
         onDeviceFound(device)
 
@@ -197,6 +201,7 @@ class Discovery {
             return
         }
         let subnet = localIP.components(separatedBy: ".").prefix(3).joined(separator: ".")
+        AppLog.add("[Discovery] Starting fallback subnet scan on \(subnet).0/24")
         log.info("Starting fallback subnet scan on \(subnet).0/24")
 
         let scanQueue = DispatchQueue(label: "com.macroid.scan", attributes: .concurrent)

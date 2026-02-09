@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Combine
+import Network
 import os.log
 
 private let log = Logger(subsystem: "com.macroid", category: "SyncManager")
@@ -42,11 +43,15 @@ class SyncManager: ObservableObject {
     }
 
     private func setupSync() {
+        AppLog.add("[SyncManager] Setting up...")
+
         let disc = Discovery()
         self.discovery = disc
         let fp = String(disc.fingerprint)
         self.fingerprint = fp
         self.localIPAddress = disc.getLocalIPAddress() ?? "Unknown"
+
+        AppLog.add("[SyncManager] Local IP: \(localIPAddress), Fingerprint: \(fp)")
 
         let server = SyncServer(fingerprint: fp)
         server.deviceInfoProvider = { disc.getDeviceInfo() }
@@ -54,10 +59,10 @@ class SyncManager: ObservableObject {
 
         server.onDeviceRegistered = { [weak self] device in
             guard let self = self else { return }
+            AppLog.add("[SyncManager] Device registered via HTTP: \(device.alias) at \(device.address):\(device.port)")
             DispatchQueue.main.async {
                 self.connectedDevice = device
                 self.syncClient = SyncClient(peer: device, fingerprint: fp)
-                log.info("Device registered via HTTP: \(device.alias) at \(device.address)")
             }
         }
 
@@ -69,27 +74,28 @@ class SyncManager: ObservableObject {
                 self.clipboardMonitor?.writeToClipboard(text)
                 self.addToHistory(text)
                 self.isUpdatingFromRemote = false
-                log.debug("Applied remote clipboard update")
+                AppLog.add("[SyncManager] Received remote clipboard (\(text.count) chars)")
             }
         }, onImageReceived: { [weak self] imageData in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.clipboardMonitor?.writeImageToClipboard(imageData)
-                log.debug("Applied remote image clipboard update")
+                AppLog.add("[SyncManager] Received remote image (\(imageData.count) bytes)")
             }
         })
 
-        // Propagate actual server port to discovery announcements
+        AppLog.add("[SyncManager] Server started on port \(server.actualPort)")
+
         if let actualPort = server.actualPort as UInt16? {
             disc.announcePort = actualPort
         }
 
         discovery?.startDiscovery { [weak self] device in
+            AppLog.add("[SyncManager] Discovery found device: \(device.alias) at \(device.address):\(device.port)")
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.connectedDevice = device
                 self.syncClient = SyncClient(peer: device, fingerprint: fp)
-                log.info("Connected to \(device.alias) at \(device.address)")
             }
         }
 
@@ -101,16 +107,15 @@ class SyncManager: ObservableObject {
                     self.clipboardText = newText
                     self.syncClient?.sendClipboard(newText)
                     self.addToHistory(newText)
-                    log.debug("Local clipboard change synced")
                 }
             }
         }, onImageChanged: { [weak self] imageData in
             guard let self = self else { return }
             self.syncClient?.sendImage(imageData)
-            log.debug("Local image clipboard change synced")
         })
 
         startKeepalive()
+        AppLog.add("[SyncManager] Setup complete")
     }
 
     private func startKeepalive() {
@@ -118,28 +123,14 @@ class SyncManager: ObservableObject {
         timer.schedule(deadline: .now() + 10, repeating: 10.0)
         timer.setEventHandler { [weak self] in
             guard let self = self, let device = self.connectedDevice else { return }
-            guard let url = URL(string: "http://\(device.address):\(device.port)/api/ping") else { return }
-
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 3
-
-            let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 3
-            let session = URLSession(configuration: config)
-
-            session.dataTask(with: request) { [weak self] data, response, error in
-                guard let self = self else { return }
-                let isReachable = error == nil && data != nil &&
-                    String(data: data!, encoding: .utf8) == "pong"
-
+            self.rawPing(host: device.address, port: UInt16(device.port)) { reachable in
                 DispatchQueue.main.async {
-                    if !isReachable && self.connectedDevice != nil {
-                        log.warning("Keepalive failed for \(device.alias), marking disconnected")
+                    if !reachable && self.connectedDevice != nil {
+                        AppLog.add("[SyncManager] Keepalive failed for \(device.alias), disconnecting")
                         self.connectedDevice = nil
                     }
                 }
-                session.invalidateAndCancel()
-            }.resume()
+            }
         }
         timer.resume()
         keepaliveTimer = timer
@@ -147,27 +138,12 @@ class SyncManager: ObservableObject {
 
     func connectByIP(_ ip: String, port: Int = Int(Discovery.port)) {
         connectionStatus = "Connecting..."
+        AppLog.add("[SyncManager] Connecting by IP to \(ip):\(port)...")
 
-        guard let url = URL(string: "http://\(ip):\(port)/api/ping") else {
-            log.error("Invalid IP address: \(ip)")
-            connectionStatus = "Failed: invalid IP"
-            return
-        }
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 3
-
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 3
-        let session = URLSession(configuration: config)
-
-        session.dataTask(with: request) { [weak self] data, response, error in
+        rawPing(host: ip, port: UInt16(port)) { [weak self] reachable in
             guard let self = self else { return }
-            let isReachable = error == nil && data != nil &&
-                String(data: data!, encoding: .utf8) == "pong"
-
             DispatchQueue.main.async {
-                if isReachable {
+                if reachable {
                     let device = DeviceInfo(
                         alias: ip,
                         deviceType: "mobile",
@@ -178,14 +154,81 @@ class SyncManager: ObservableObject {
                     self.connectedDevice = device
                     self.syncClient = SyncClient(peer: device, fingerprint: self.fingerprint)
                     self.connectionStatus = "Connected to \(ip)"
-                    log.info("Manually connected to \(ip):\(port)")
+                    AppLog.add("[SyncManager] Connected to \(ip):\(port)")
                 } else {
                     self.connectionStatus = "Failed to connect to \(ip)"
-                    log.warning("Failed to connect to \(ip):\(port)")
+                    AppLog.add("[SyncManager] ERROR: Failed to connect to \(ip):\(port)")
                 }
             }
-            session.invalidateAndCancel()
-        }.resume()
+        }
+    }
+
+    /// Raw TCP ping using NWConnection - bypasses URLSession/ATS entirely
+    private func rawPing(host: String, port: UInt16, completion: @escaping (Bool) -> Void) {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            AppLog.add("[Ping] Invalid port: \(port)")
+            completion(false)
+            return
+        }
+
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
+        var completed = false
+
+        connection.stateUpdateHandler = { state in
+            guard !completed else { return }
+            switch state {
+            case .ready:
+                AppLog.add("[Ping] TCP connected to \(host):\(port), sending GET /api/ping")
+                let request = "GET /api/ping HTTP/1.1\r\nHost: \(host):\(port)\r\nConnection: close\r\n\r\n"
+                connection.send(content: request.data(using: .utf8), completion: .contentProcessed { error in
+                    if let error = error {
+                        AppLog.add("[Ping] Send error: \(error.localizedDescription)")
+                        if !completed {
+                            completed = true
+                            connection.cancel()
+                            completion(false)
+                        }
+                        return
+                    }
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, error in
+                        guard !completed else { return }
+                        completed = true
+                        connection.cancel()
+
+                        if let data = data, let response = String(data: data, encoding: .utf8) {
+                            let hasPong = response.contains("pong")
+                            AppLog.add("[Ping] Response from \(host): \(hasPong ? "pong OK" : String(response.prefix(200)))")
+                            completion(hasPong)
+                        } else {
+                            AppLog.add("[Ping] No data from \(host): \(error?.localizedDescription ?? "unknown")")
+                            completion(false)
+                        }
+                    }
+                })
+            case .waiting(let error):
+                AppLog.add("[Ping] Waiting for \(host):\(port): \(error.localizedDescription)")
+            case .failed(let error):
+                AppLog.add("[Ping] TCP connection to \(host):\(port) FAILED: \(error.localizedDescription)")
+                if !completed {
+                    completed = true
+                    connection.cancel()
+                    completion(false)
+                }
+            default:
+                break
+            }
+        }
+
+        connection.start(queue: syncQueue)
+
+        syncQueue.asyncAfter(deadline: .now() + 3) {
+            if !completed {
+                completed = true
+                AppLog.add("[Ping] TIMEOUT connecting to \(host):\(port)")
+                connection.cancel()
+                completion(false)
+            }
+        }
     }
 
     func onTextEdited(_ text: String) {
@@ -225,6 +268,6 @@ class SyncManager: ObservableObject {
         clipboardMonitor?.stopMonitoring()
         discovery?.stopDiscovery()
         syncServer?.stop()
-        log.info("All sync components stopped")
+        AppLog.add("[SyncManager] Stopped all components")
     }
 }

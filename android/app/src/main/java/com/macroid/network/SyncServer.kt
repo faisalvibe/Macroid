@@ -2,6 +2,7 @@ package com.macroid.network
 
 import android.util.Log
 import com.google.gson.Gson
+import com.macroid.util.AppLog
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -69,6 +70,7 @@ class SyncServer(
                                     lastTimestamp = timestamp
                                     lastClipboard = text
                                     Log.d(TAG, "Received clipboard (${text.length} chars) from origin=$origin")
+                                    AppLog.add("[SyncServer] Received clipboard (${text.length} chars) from origin=$origin")
                                     CoroutineScope(Dispatchers.Main).launch {
                                         onClipboardReceived(text)
                                     }
@@ -108,6 +110,7 @@ class SyncServer(
                                 }
 
                                 Log.d(TAG, "Received image (${imageBytes.size} bytes) from origin=$origin")
+                                AppLog.add("[SyncServer] Received image (${imageBytes.size} bytes) from origin=$origin")
                                 CoroutineScope(Dispatchers.Main).launch {
                                     onImageReceived(imageBytes)
                                 }
@@ -151,6 +154,7 @@ class SyncServer(
                                         port = port
                                     )
                                     Log.d(TAG, "Device registered via HTTP: ${device.alias} at ${device.address}")
+                                    AppLog.add("[SyncServer] Device registered via HTTP: ${device.alias} at ${device.address}:${device.port}")
                                     onDeviceRegistered?.invoke(device)
                                 }
 
@@ -170,8 +174,10 @@ class SyncServer(
                 }
                 server?.start(wait = false)
                 Log.d(TAG, "Server started on port ${Discovery.PORT}")
+                AppLog.add("[SyncServer] Server started on port ${Discovery.PORT}")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start server on port ${Discovery.PORT}", e)
+                AppLog.add("[SyncServer] ERROR: Failed to start server: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
     }

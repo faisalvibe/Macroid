@@ -15,6 +15,7 @@ import com.macroid.network.DeviceInfo
 import com.macroid.network.Discovery
 import com.macroid.network.SyncClient
 import com.macroid.network.SyncServer
+import com.macroid.util.AppLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -42,7 +43,6 @@ fun MacroidApp() {
         val discovery = remember { Discovery(context) }
         val localIP = remember { discovery.getLocalIPAddress() ?: "Unknown" }
 
-        // Load persisted history on first composition
         val prefs = remember { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
         remember {
             val ordered = prefs.getString("${HISTORY_KEY}_ordered", null)
@@ -59,18 +59,21 @@ fun MacroidApp() {
         val clipboardMonitor = remember { ClipboardMonitor(context) }
 
         DisposableEffect(Unit) {
+            AppLog.add("[MacroidApp] Starting up...")
+            AppLog.add("[MacroidApp] Local IP: $localIP, Fingerprint: ${discovery.fingerprint}")
+
             val onDeviceFound = { device: DeviceInfo ->
                 connectedDevice = device
                 isSearching = false
                 syncClient.setPeer(device)
+                AppLog.add("[MacroidApp] Device found: ${device.alias} at ${device.address}:${device.port}")
             }
 
-            // Wire up SyncServer to also trigger discovery via register endpoint
             syncServer.onDeviceRegistered = { device ->
                 if (device.deviceType != "mobile") {
                     CoroutineScope(Dispatchers.Main).launch {
                         onDeviceFound(device)
-                        Log.d(TAG, "Device registered via HTTP: ${device.alias}")
+                        AppLog.add("[MacroidApp] Device registered via HTTP: ${device.alias}")
                     }
                 }
             }
@@ -80,27 +83,29 @@ fun MacroidApp() {
                     clipboardText = incomingText
                     clipboardMonitor.writeToClipboard(incomingText)
                     addToHistory(clipboardHistory, incomingText, prefs)
-                    Log.d(TAG, "Received remote clipboard update")
+                    AppLog.add("[MacroidApp] Received remote clipboard (${incomingText.length} chars)")
                 }
             }, onImageReceived = { imageBytes ->
                 clipboardMonitor.writeImageToClipboard(imageBytes)
-                Log.d(TAG, "Received remote image clipboard update")
+                AppLog.add("[MacroidApp] Received remote image (${imageBytes.size} bytes)")
             })
+
+            AppLog.add("[MacroidApp] Server started on port ${Discovery.PORT}")
 
             discovery.startDiscovery { device ->
                 onDeviceFound(device)
             }
+
+            AppLog.add("[MacroidApp] Discovery started")
 
             clipboardMonitor.startMonitoring(onClipboardChanged = { newText ->
                 if (newText != clipboardText) {
                     clipboardText = newText
                     syncClient.sendClipboard(newText)
                     addToHistory(clipboardHistory, newText, prefs)
-                    Log.d(TAG, "Detected local clipboard change, syncing")
                 }
             }, onImageChanged = { imageBytes ->
                 syncClient.sendImage(imageBytes)
-                Log.d(TAG, "Detected local image clipboard change, syncing")
             })
 
             val keepaliveJob = CoroutineScope(Dispatchers.IO).launch {
@@ -110,7 +115,7 @@ fun MacroidApp() {
                     if (device != null) {
                         val reachable = pingDevice(device)
                         if (!reachable) {
-                            Log.w(TAG, "Keepalive failed for ${device.alias}, marking disconnected")
+                            AppLog.add("[MacroidApp] Keepalive failed for ${device.alias}")
                             connectedDevice = null
                             isSearching = true
                         }
@@ -118,6 +123,8 @@ fun MacroidApp() {
                     delay(10_000)
                 }
             }
+
+            AppLog.add("[MacroidApp] Setup complete")
 
             onDispose {
                 keepaliveJob.cancel()
@@ -150,6 +157,7 @@ fun MacroidApp() {
             },
             onConnectByIP = { ip ->
                 connectionStatus = "Connecting..."
+                AppLog.add("[MacroidApp] Connecting by IP to $ip:${Discovery.PORT}...")
                 CoroutineScope(Dispatchers.IO).launch {
                     val device = DeviceInfo(
                         alias = ip,
@@ -165,10 +173,10 @@ fun MacroidApp() {
                             isSearching = false
                             syncClient.setPeer(device)
                             connectionStatus = "Connected to $ip"
-                            Log.d(TAG, "Manually connected to $ip")
+                            AppLog.add("[MacroidApp] Connected to $ip")
                         } else {
                             connectionStatus = "Failed to connect to $ip"
-                            Log.w(TAG, "Failed to connect to $ip")
+                            AppLog.add("[MacroidApp] ERROR: Failed to connect to $ip")
                         }
                     }
                 }
@@ -179,6 +187,7 @@ fun MacroidApp() {
 
 private fun pingDevice(device: DeviceInfo): Boolean {
     return try {
+        AppLog.add("[Ping] Connecting to ${device.address}:${device.port}/api/ping...")
         val url = URL("http://${device.address}:${device.port}/api/ping")
         val connection = url.openConnection() as HttpURLConnection
         connection.connectTimeout = 3000
@@ -186,8 +195,11 @@ private fun pingDevice(device: DeviceInfo): Boolean {
         connection.requestMethod = "GET"
         val response = connection.inputStream.bufferedReader().readText()
         connection.disconnect()
-        response == "pong"
+        val ok = response == "pong"
+        AppLog.add("[Ping] Response from ${device.address}: ${if (ok) "pong OK" else "'$response'"}")
+        ok
     } catch (e: Exception) {
+        AppLog.add("[Ping] FAILED to ${device.address}: ${e.javaClass.simpleName}: ${e.message}")
         false
     }
 }
