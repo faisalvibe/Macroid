@@ -1,5 +1,6 @@
 package com.macroid.network
 
+import android.util.Base64
 import android.util.Log
 import com.google.gson.Gson
 import io.ktor.http.ContentType
@@ -25,7 +26,7 @@ class SyncServer(private val deviceFingerprint: String) {
 
     companion object {
         private const val TAG = "SyncServer"
-        private const val MAX_BODY_SIZE = 1_048_576 // 1MB
+        private const val MAX_BODY_SIZE = 10_485_760 // 10MB
     }
 
     private var server: NettyApplicationEngine? = null
@@ -33,6 +34,7 @@ class SyncServer(private val deviceFingerprint: String) {
     private var lastClipboard = ""
     private var lastTimestamp = 0L
     var onPeerDiscovered: ((DeviceInfo) -> Unit)? = null
+    var onImageReceived: ((ByteArray) -> Unit)? = null
 
     fun start(onClipboardReceived: (String) -> Unit) {
         CoroutineScope(Dispatchers.IO).launch {
@@ -53,9 +55,9 @@ class SyncServer(private val deviceFingerprint: String) {
                                 }
 
                                 val data = gson.fromJson(body, Map::class.java)
-                                val text = data["text"] as? String ?: ""
                                 val timestamp = (data["timestamp"] as? Double)?.toLong() ?: 0L
                                 val origin = data["origin"] as? String ?: ""
+                                val type = data["type"] as? String ?: "text"
 
                                 if (origin == deviceFingerprint) {
                                     Log.d(TAG, "Ignoring echo from self")
@@ -76,12 +78,25 @@ class SyncServer(private val deviceFingerprint: String) {
                                     onPeerDiscovered?.invoke(device)
                                 }
 
-                                if (text.isNotEmpty() && timestamp > lastTimestamp) {
-                                    lastTimestamp = timestamp
-                                    lastClipboard = text
-                                    Log.d(TAG, "Received clipboard (${text.length} chars) from origin=$origin")
-                                    CoroutineScope(Dispatchers.Main).launch {
-                                        onClipboardReceived(text)
+                                if (type == "image") {
+                                    val imageBase64 = data["image"] as? String
+                                    if (imageBase64 != null && timestamp > lastTimestamp) {
+                                        val imageData = Base64.decode(imageBase64, Base64.NO_WRAP)
+                                        lastTimestamp = timestamp
+                                        Log.d(TAG, "Received image (${imageData.size} bytes) from origin=$origin")
+                                        CoroutineScope(Dispatchers.Main).launch {
+                                            onImageReceived?.invoke(imageData)
+                                        }
+                                    }
+                                } else {
+                                    val text = data["text"] as? String ?: ""
+                                    if (text.isNotEmpty() && timestamp > lastTimestamp) {
+                                        lastTimestamp = timestamp
+                                        lastClipboard = text
+                                        Log.d(TAG, "Received clipboard (${text.length} chars) from origin=$origin")
+                                        CoroutineScope(Dispatchers.Main).launch {
+                                            onClipboardReceived(text)
+                                        }
                                     }
                                 }
                                 call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))

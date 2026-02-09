@@ -185,7 +185,7 @@ class Discovery {
         }
     }
 
-    private func getLocalIPAddress() -> String? {
+    func getLocalIPAddress() -> String? {
         var address: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }

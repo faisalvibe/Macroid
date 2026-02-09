@@ -12,8 +12,9 @@ class SyncServer {
     private var lastTimestamp: Int64 = 0
     private var onClipboardReceived: ((String) -> Void)?
     private let deviceFingerprint: String
-    private let maxBodySize = 1_048_576 // 1MB
+    private let maxBodySize = 10_485_760 // 10MB
     var onPeerDiscovered: ((DeviceInfo) -> Void)?
+    var onImageReceived: ((Data) -> Void)?
 
     init(fingerprint: String) {
         self.deviceFingerprint = fingerprint
@@ -72,26 +73,57 @@ class SyncServer {
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
 
-        // Extract remote IP
         var remoteAddress = "unknown"
         if case .hostPort(let host, _) = connection.currentPath?.remoteEndpoint {
             remoteAddress = "\(host)"
         }
 
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self = self, let data = data else {
+        accumulateRequest(connection: connection, buffer: Data()) { [weak self] requestData in
+            guard let self = self else {
                 connection.cancel()
                 return
             }
-
-            if let error = error {
-                log.warning("Connection receive error: \(error.localizedDescription)")
-                connection.cancel()
-                return
-            }
-
-            let request = String(data: data, encoding: .utf8) ?? ""
+            let request = String(data: requestData, encoding: .utf8) ?? ""
             self.routeRequest(request, connection: connection, remoteAddress: remoteAddress)
+        }
+    }
+
+    private func accumulateRequest(connection: NWConnection, buffer: Data, completion: @escaping (Data) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 2_097_152) { [weak self] data, _, isComplete, error in
+            var accumulated = buffer
+            if let data = data {
+                accumulated.append(data)
+            }
+
+            // Check if we have the full HTTP request
+            if let requestStr = String(data: accumulated, encoding: .utf8),
+               let headerEndRange = requestStr.range(of: "\r\n\r\n") {
+                let headers = String(requestStr[..<headerEndRange.lowerBound])
+                let bodyStartIdx = requestStr.index(headerEndRange.upperBound, offsetBy: 0)
+                let body = String(requestStr[bodyStartIdx...])
+
+                // Parse Content-Length
+                var contentLength = 0
+                for line in headers.components(separatedBy: "\r\n") {
+                    if line.lowercased().hasPrefix("content-length:") {
+                        let value = String(line.dropFirst("content-length:".count)).trimmingCharacters(in: .whitespaces)
+                        contentLength = Int(value) ?? 0
+                        break
+                    }
+                }
+
+                if contentLength == 0 || body.utf8.count >= contentLength {
+                    completion(accumulated)
+                    return
+                }
+            }
+
+            if isComplete || error != nil || accumulated.count > 10_485_760 {
+                completion(accumulated)
+                return
+            }
+
+            self?.accumulateRequest(connection: connection, buffer: accumulated, completion: completion)
         }
     }
 
@@ -131,13 +163,12 @@ class SyncServer {
     }
 
     private func handleClipboardPost(request: String, connection: NWConnection, remoteAddress: String = "unknown") {
-        let parts = request.components(separatedBy: "\r\n\r\n")
-        guard parts.count >= 2 else {
+        guard let headerEndRange = request.range(of: "\r\n\r\n") else {
             sendResponse(connection: connection, status: 400, body: "{\"error\":\"missing body\"}")
             return
         }
 
-        let bodyString = parts[1]
+        let bodyString = String(request[headerEndRange.upperBound...])
         if bodyString.count > maxBodySize {
             log.warning("Rejected oversized request: \(bodyString.count) bytes")
             sendResponse(connection: connection, status: 413, body: "{\"error\":\"payload too large\"}")
@@ -151,9 +182,9 @@ class SyncServer {
             return
         }
 
-        let text = json["text"] as? String ?? ""
         let timestamp = json["timestamp"] as? Int64 ?? (json["timestamp"] as? Double).map { Int64($0) } ?? 0
         let origin = json["origin"] as? String ?? ""
+        let type = json["type"] as? String ?? "text"
 
         if origin == deviceFingerprint {
             log.debug("Ignoring echo from self")
@@ -174,11 +205,22 @@ class SyncServer {
             onPeerDiscovered?(device)
         }
 
-        if !text.isEmpty && timestamp > lastTimestamp {
-            lastTimestamp = timestamp
-            lastClipboard = text
-            log.info("Received clipboard (\(text.count) chars) from origin=\(origin)")
-            onClipboardReceived?(text)
+        if type == "image" {
+            if let imageBase64 = json["image"] as? String,
+               let imageData = Data(base64Encoded: imageBase64),
+               timestamp > lastTimestamp {
+                lastTimestamp = timestamp
+                log.info("Received image (\(imageData.count) bytes) from origin=\(origin)")
+                onImageReceived?(imageData)
+            }
+        } else {
+            let text = json["text"] as? String ?? ""
+            if !text.isEmpty && timestamp > lastTimestamp {
+                lastTimestamp = timestamp
+                lastClipboard = text
+                log.info("Received clipboard (\(text.count) chars) from origin=\(origin)")
+                onClipboardReceived?(text)
+            }
         }
 
         sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")

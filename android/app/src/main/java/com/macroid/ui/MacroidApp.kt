@@ -29,8 +29,10 @@ fun MacroidApp() {
         val context = LocalContext.current
 
         var clipboardText by remember { mutableStateOf("") }
+        var clipboardImage by remember { mutableStateOf<ByteArray?>(null) }
         var connectedDevice by remember { mutableStateOf<DeviceInfo?>(null) }
         var isSearching by remember { mutableStateOf(true) }
+        var connectionStatus by remember { mutableStateOf("") }
         val clipboardHistory = remember { mutableStateListOf<String>() }
 
         val discovery = remember { Discovery(context) }
@@ -38,10 +40,13 @@ fun MacroidApp() {
         val syncClient = remember { SyncClient(discovery.fingerprint) }
         val clipboardMonitor = remember { ClipboardMonitor(context) }
 
+        val localIP = remember { discovery.getLocalIPAddress() ?: "Unknown" }
+
         DisposableEffect(Unit) {
             val onDeviceFound = { device: DeviceInfo ->
                 connectedDevice = device
                 isSearching = false
+                connectionStatus = ""
                 syncClient.setPeer(device)
             }
 
@@ -52,9 +57,17 @@ fun MacroidApp() {
                 }
             }
 
+            syncServer.onImageReceived = { imageData ->
+                clipboardImage = imageData
+                clipboardText = ""
+                clipboardMonitor.writeImageToClipboard(imageData)
+                Log.d(TAG, "Received remote image (${imageData.size} bytes)")
+            }
+
             syncServer.start { incomingText ->
                 if (incomingText != clipboardText) {
                     clipboardText = incomingText
+                    clipboardImage = null
                     clipboardMonitor.writeToClipboard(incomingText)
                     addToHistory(clipboardHistory, incomingText)
                     Log.d(TAG, "Received remote clipboard update")
@@ -63,14 +76,23 @@ fun MacroidApp() {
 
             discovery.startDiscovery(onDeviceFound)
 
-            clipboardMonitor.startMonitoring { newText ->
-                if (newText != clipboardText) {
-                    clipboardText = newText
-                    syncClient.sendClipboard(newText)
-                    addToHistory(clipboardHistory, newText)
-                    Log.d(TAG, "Detected local clipboard change, syncing")
+            clipboardMonitor.startMonitoring(
+                onClipboardChanged = { newText ->
+                    if (newText != clipboardText) {
+                        clipboardText = newText
+                        clipboardImage = null
+                        syncClient.sendClipboard(newText)
+                        addToHistory(clipboardHistory, newText)
+                        Log.d(TAG, "Detected local clipboard change, syncing")
+                    }
+                },
+                onImageChanged = { imageData ->
+                    clipboardImage = imageData
+                    clipboardText = ""
+                    syncClient.sendImage(imageData)
+                    Log.d(TAG, "Detected local image change, syncing (${imageData.size} bytes)")
                 }
-            }
+            )
 
             onDispose {
                 clipboardMonitor.stopMonitoring()
@@ -81,16 +103,21 @@ fun MacroidApp() {
 
         MainScreen(
             clipboardText = clipboardText,
+            clipboardImage = clipboardImage,
             connectedDevice = connectedDevice,
             isSearching = isSearching,
+            connectionStatus = connectionStatus,
+            localIP = localIP,
             clipboardHistory = clipboardHistory,
             onTextChanged = { newText ->
                 clipboardText = newText
+                clipboardImage = null
                 clipboardMonitor.writeToClipboard(newText)
                 syncClient.sendClipboard(newText)
             },
             onHistoryItemClicked = { text ->
                 clipboardText = text
+                clipboardImage = null
                 clipboardMonitor.writeToClipboard(text)
                 syncClient.sendClipboard(text)
             },
@@ -100,12 +127,13 @@ fun MacroidApp() {
             onManualConnect = { ip ->
                 val trimmed = ip.trim()
                 if (trimmed.isNotEmpty()) {
+                    connectionStatus = "Connecting..."
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
                             val url = URL("http://$trimmed:${Discovery.PORT}/api/ping")
                             val conn = url.openConnection() as HttpURLConnection
-                            conn.connectTimeout = 3000
-                            conn.readTimeout = 3000
+                            conn.connectTimeout = 5000
+                            conn.readTimeout = 5000
                             conn.requestMethod = "GET"
                             val code = conn.responseCode
                             conn.disconnect()
@@ -120,11 +148,22 @@ fun MacroidApp() {
                             CoroutineScope(Dispatchers.Main).launch {
                                 connectedDevice = device
                                 isSearching = false
+                                connectionStatus = ""
                                 syncClient.setPeer(device)
                                 Log.d(TAG, "Manually connected to $trimmed")
                             }
                         } catch (e: Exception) {
                             Log.e(TAG, "Manual connect to $trimmed failed", e)
+                            CoroutineScope(Dispatchers.Main).launch {
+                                connectionStatus = "Failed: ${e.message ?: "connection error"}"
+                                // Auto-clear after 3 seconds
+                                CoroutineScope(Dispatchers.Main).launch {
+                                    kotlinx.coroutines.delay(3000)
+                                    if (connectedDevice == null) {
+                                        connectionStatus = ""
+                                    }
+                                }
+                            }
                         }
                     }
                 }

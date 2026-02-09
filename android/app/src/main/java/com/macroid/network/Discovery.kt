@@ -223,7 +223,7 @@ class Discovery(private val context: Context) {
         }
     }
 
-    private fun getLocalIPAddress(): String? {
+    fun getLocalIPAddress(): String? {
         return try {
             NetworkInterface.getNetworkInterfaces()?.toList()
                 ?.flatMap { it.inetAddresses.toList() }

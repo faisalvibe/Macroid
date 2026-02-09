@@ -14,7 +14,7 @@ struct ContentView: View {
             if showHistory {
                 historyPanel
             } else {
-                editorArea
+                contentArea
             }
             Divider()
             statusBar
@@ -46,9 +46,9 @@ struct ContentView: View {
         .frame(height: 44)
     }
 
-    private var editorArea: some View {
+    private var contentArea: some View {
         ZStack(alignment: .topLeading) {
-            if syncManager.clipboardText.isEmpty {
+            if syncManager.clipboardText.isEmpty && syncManager.clipboardImage == nil {
                 Text("Copy something on either device...")
                     .foregroundColor(
                         colorScheme == .dark
@@ -60,15 +60,26 @@ struct ContentView: View {
                     .padding(.leading, 5)
             }
 
-            TextEditor(text: $syncManager.clipboardText)
-                .font(.system(size: 15))
-                .lineSpacing(6)
-                .scrollContentBackground(.hidden)
-                .background(Color.clear)
-                .foregroundColor(colorScheme == .dark ? Color(hex: "F2F2F7") : Color(hex: "1C1C1E"))
-                .onChange(of: syncManager.clipboardText) { newValue in
-                    syncManager.onTextEdited(newValue)
+            if let imageData = syncManager.clipboardImage,
+               let nsImage = NSImage(data: imageData) {
+                ScrollView {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity)
+                        .cornerRadius(8)
                 }
+            } else {
+                TextEditor(text: $syncManager.clipboardText)
+                    .font(.system(size: 15))
+                    .lineSpacing(6)
+                    .scrollContentBackground(.hidden)
+                    .background(Color.clear)
+                    .foregroundColor(colorScheme == .dark ? Color(hex: "F2F2F7") : Color(hex: "1C1C1E"))
+                    .onChange(of: syncManager.clipboardText) { newValue in
+                        syncManager.onTextEdited(newValue)
+                    }
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -163,9 +174,18 @@ struct ContentView: View {
                     .font(.system(size: 12))
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .disabled(syncManager.connectionStatus == "Connecting...")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
+
+                if !syncManager.connectionStatus.isEmpty {
+                    Text(syncManager.connectionStatus)
+                        .font(.system(size: 11))
+                        .foregroundColor(syncManager.connectionStatus.hasPrefix("Failed") ? .red : Color(hex: "8E8E93"))
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 4)
+                }
 
                 Divider()
             }
@@ -190,14 +210,15 @@ struct ContentView: View {
                                 : Color(hex: "8E8E93").opacity(0.6)
                         )
                 } else {
-                    Text("Searching for devices...")
+                    Text("My IP: \(syncManager.localIP)")
                         .font(.system(size: 12))
                         .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+                        .textSelection(.enabled)
 
                     Spacer()
 
                     Button(action: { showManualConnect.toggle() }) {
-                        Text("Manual")
+                        Text(showManualConnect ? "Hide" : "Manual")
                             .font(.system(size: 11))
                             .foregroundColor(Color(hex: "4A90D9"))
                     }

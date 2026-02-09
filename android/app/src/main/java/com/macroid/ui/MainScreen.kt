@@ -1,6 +1,8 @@
 package com.macroid.ui
 
+import android.graphics.BitmapFactory
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -15,13 +17,21 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -34,29 +44,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import com.macroid.network.DeviceInfo
 
 @Composable
 fun MainScreen(
     clipboardText: String,
+    clipboardImage: ByteArray? = null,
     connectedDevice: DeviceInfo?,
     isSearching: Boolean,
+    connectionStatus: String = "",
+    localIP: String = "",
     clipboardHistory: List<String>,
     onTextChanged: (String) -> Unit,
     onHistoryItemClicked: (String) -> Unit,
@@ -99,7 +108,7 @@ fun MainScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp, vertical = 16.dp)
             ) {
-                if (clipboardText.isEmpty()) {
+                if (clipboardText.isEmpty() && clipboardImage == null) {
                     Text(
                         text = "Copy something on either device...",
                         style = TextStyle(
@@ -109,17 +118,39 @@ fun MainScreen(
                     )
                 }
 
-                BasicTextField(
-                    value = clipboardText,
-                    onValueChange = onTextChanged,
-                    modifier = Modifier.fillMaxSize(),
-                    textStyle = TextStyle(
-                        fontSize = 16.sp,
-                        lineHeight = 24.sp,
-                        color = MaterialTheme.colorScheme.onBackground
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
-                )
+                if (clipboardImage != null) {
+                    val bitmap = remember(clipboardImage) {
+                        BitmapFactory.decodeByteArray(clipboardImage, 0, clipboardImage.size)
+                    }
+                    if (bitmap != null) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = "Clipboard image",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp)),
+                                contentScale = ContentScale.FillWidth
+                            )
+                        }
+                    }
+                } else {
+                    BasicTextField(
+                        value = clipboardText,
+                        onValueChange = onTextChanged,
+                        modifier = Modifier.fillMaxSize(),
+                        textStyle = TextStyle(
+                            fontSize = 16.sp,
+                            lineHeight = 24.sp,
+                            color = MaterialTheme.colorScheme.onBackground
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
+                    )
+                }
             }
         }
 
@@ -131,6 +162,8 @@ fun MainScreen(
         StatusBar(
             connectedDevice = connectedDevice,
             isSearching = isSearching,
+            connectionStatus = connectionStatus,
+            localIP = localIP,
             onManualConnect = onManualConnect
         )
     }
@@ -282,6 +315,8 @@ private fun HistoryItem(text: String, onClick: () -> Unit) {
 private fun StatusBar(
     connectedDevice: DeviceInfo?,
     isSearching: Boolean,
+    connectionStatus: String = "",
+    localIP: String = "",
     onManualConnect: (String) -> Unit = {}
 ) {
     var showManualConnect by remember { mutableStateOf(false) }
@@ -293,51 +328,72 @@ private fun StatusBar(
             .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
         AnimatedVisibility(visible = showManualConnect && connectedDevice == null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = manualIP,
-                    onValueChange = { manualIP = it },
-                    placeholder = {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = manualIP,
+                        onValueChange = { manualIP = it },
+                        placeholder = {
+                            Text(
+                                "Enter IP address",
+                                style = TextStyle(fontSize = 13.sp)
+                            )
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp),
+                        textStyle = TextStyle(fontSize = 13.sp),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Decimal,
+                            imeAction = ImeAction.Go
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onGo = { onManualConnect(manualIP) }
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                        ),
+                        enabled = connectionStatus != "Connecting..."
+                    )
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Button(
+                        onClick = { onManualConnect(manualIP) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.height(44.dp),
+                        enabled = connectionStatus != "Connecting..."
+                    ) {
                         Text(
-                            "Enter IP address",
+                            if (connectionStatus == "Connecting...") "..." else "Connect",
                             style = TextStyle(fontSize = 13.sp)
                         )
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(44.dp),
-                    textStyle = TextStyle(fontSize = 13.sp),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Number,
-                        imeAction = ImeAction.Go
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onGo = { onManualConnect(manualIP) }
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    }
+                }
+
+                if (connectionStatus.isNotEmpty()) {
+                    Text(
+                        text = connectionStatus,
+                        style = TextStyle(
+                            fontSize = 11.sp,
+                            color = if (connectionStatus.startsWith("Failed")) Color(0xFFFF3B30)
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
+                        modifier = Modifier
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 6.dp)
                     )
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Button(
-                    onClick = { onManualConnect(manualIP) },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.height(44.dp)
-                ) {
-                    Text("Connect", style = TextStyle(fontSize = 13.sp))
                 }
             }
         }
@@ -377,7 +433,7 @@ private fun StatusBar(
                 )
             } else {
                 Text(
-                    text = if (isSearching) "Searching for devices..." else "Disconnected",
+                    text = "My IP: $localIP",
                     style = TextStyle(
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -386,7 +442,7 @@ private fun StatusBar(
                 Spacer(modifier = Modifier.weight(1f))
                 TextButton(onClick = { showManualConnect = !showManualConnect }) {
                     Text(
-                        text = "Manual",
+                        text = if (showManualConnect) "Hide" else "Manual",
                         style = TextStyle(
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.primary

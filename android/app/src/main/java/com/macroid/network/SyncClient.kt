@@ -1,5 +1,6 @@
 package com.macroid.network
 
+import android.util.Base64
 import android.util.Log
 import com.google.gson.Gson
 import io.ktor.client.HttpClient
@@ -24,8 +25,8 @@ class SyncClient(private val deviceFingerprint: String) {
     private val client = HttpClient(OkHttp) {
         engine {
             config {
-                connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
-                readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             }
         }
     }
@@ -48,32 +49,52 @@ class SyncClient(private val deviceFingerprint: String) {
         CoroutineScope(Dispatchers.IO).launch {
             val payload = gson.toJson(
                 mapOf(
+                    "type" to "text",
                     "text" to text,
                     "timestamp" to System.currentTimeMillis(),
                     "origin" to deviceFingerprint
                 )
             )
+            sendWithRetry(device, payload, "${text.length} chars")
+        }
+    }
 
-            var attempt = 0
-            var backoff = INITIAL_BACKOFF_MS
+    fun sendImage(imageData: ByteArray) {
+        val device = peer ?: return
 
-            while (attempt < MAX_RETRIES) {
-                try {
-                    client.post("http://${device.address}:${device.port}/api/clipboard") {
-                        contentType(ContentType.Application.Json)
-                        setBody(payload)
-                    }
-                    Log.d(TAG, "Sent clipboard (${text.length} chars) to ${device.alias}")
-                    return@launch
-                } catch (e: Exception) {
-                    attempt++
-                    if (attempt < MAX_RETRIES) {
-                        Log.w(TAG, "Send failed (attempt $attempt/$MAX_RETRIES), retrying in ${backoff}ms", e)
-                        delay(backoff)
-                        backoff *= 2
-                    } else {
-                        Log.e(TAG, "Send failed after $MAX_RETRIES attempts", e)
-                    }
+        CoroutineScope(Dispatchers.IO).launch {
+            val payload = gson.toJson(
+                mapOf(
+                    "type" to "image",
+                    "image" to Base64.encodeToString(imageData, Base64.NO_WRAP),
+                    "timestamp" to System.currentTimeMillis(),
+                    "origin" to deviceFingerprint
+                )
+            )
+            sendWithRetry(device, payload, "${imageData.size} bytes image")
+        }
+    }
+
+    private suspend fun sendWithRetry(device: DeviceInfo, payload: String, description: String) {
+        var attempt = 0
+        var backoff = INITIAL_BACKOFF_MS
+
+        while (attempt < MAX_RETRIES) {
+            try {
+                client.post("http://${device.address}:${device.port}/api/clipboard") {
+                    contentType(ContentType.Application.Json)
+                    setBody(payload)
+                }
+                Log.d(TAG, "Sent clipboard ($description) to ${device.alias}")
+                return
+            } catch (e: Exception) {
+                attempt++
+                if (attempt < MAX_RETRIES) {
+                    Log.w(TAG, "Send failed (attempt $attempt/$MAX_RETRIES), retrying in ${backoff}ms", e)
+                    delay(backoff)
+                    backoff *= 2
+                } else {
+                    Log.e(TAG, "Send failed after $MAX_RETRIES attempts", e)
                 }
             }
         }
