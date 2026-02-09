@@ -10,10 +10,12 @@ class Discovery {
 
     private var listenConnection: NWConnection?
     private var announceTimer: DispatchSourceTimer?
+    private var fallbackTimer: DispatchSourceTimer?
     private var listener: NWListener?
     private var multicastGroup: NWConnectionGroup?
     private let queue = DispatchQueue(label: "com.macroid.discovery")
     let fingerprint = UUID().uuidString.prefix(8).lowercased()
+    private var deviceFound = false
 
     private var announcement: [String: Any] {
         return [
@@ -33,6 +35,19 @@ class Discovery {
         log.info("Starting discovery with fingerprint: \(String(self.fingerprint))")
         startMulticastListener(onDeviceFound: onDeviceFound)
         startAnnouncing()
+        startFallbackTimer(onDeviceFound: onDeviceFound)
+    }
+
+    private func startFallbackTimer(onDeviceFound: @escaping (DeviceInfo) -> Void) {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 10.0)
+        timer.setEventHandler { [weak self] in
+            guard let self = self, !self.deviceFound else { return }
+            log.info("No device found via multicast after 10s, starting subnet scan fallback")
+            self.startFallbackDiscovery(onDeviceFound: onDeviceFound)
+        }
+        timer.resume()
+        fallbackTimer = timer
     }
 
     private func startMulticastListener(onDeviceFound: @escaping (DeviceInfo) -> Void) {
@@ -91,6 +106,7 @@ class Discovery {
         )
 
         log.info("Found device: \(device.alias) at \(device.address):\(device.port)")
+        deviceFound = true
         onDeviceFound(device)
     }
 
@@ -202,6 +218,8 @@ class Discovery {
     func stopDiscovery() {
         announceTimer?.cancel()
         announceTimer = nil
+        fallbackTimer?.cancel()
+        fallbackTimer = nil
         multicastGroup?.cancel()
         multicastGroup = nil
         log.info("Discovery stopped")

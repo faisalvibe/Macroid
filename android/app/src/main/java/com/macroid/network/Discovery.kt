@@ -11,9 +11,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
+import java.net.HttpURLConnection
 import java.net.InetAddress
+import java.net.Inet4Address
 import java.net.MulticastSocket
 import java.net.NetworkInterface
+import java.net.URL
 import java.util.UUID
 
 class Discovery(private val context: Context) {
@@ -23,14 +26,18 @@ class Discovery(private val context: Context) {
         const val MULTICAST_GROUP = "224.0.0.167"
         const val PORT = 53317
         private const val ANNOUNCE_INTERVAL_MS = 3000L
+        private const val FALLBACK_DELAY_MS = 10000L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private var listenJob: Job? = null
     private var announceJob: Job? = null
+    private var fallbackJob: Job? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private val gson = Gson()
     val fingerprint: String = UUID.randomUUID().toString().take(8)
+    @Volatile
+    private var deviceFound = false
 
     private val announcement: Map<String, Any> = mapOf(
         "alias" to (android.os.Build.MODEL ?: "Android"),
@@ -58,6 +65,14 @@ class Discovery(private val context: Context) {
 
         announceJob = scope.launch {
             announcePresence()
+        }
+
+        fallbackJob = scope.launch {
+            delay(FALLBACK_DELAY_MS)
+            if (!deviceFound) {
+                Log.d(TAG, "No device found via multicast after ${FALLBACK_DELAY_MS}ms, starting subnet scan")
+                subnetScan(onDeviceFound)
+            }
         }
     }
 
@@ -102,7 +117,8 @@ class Discovery(private val context: Context) {
                         address = packet.address.hostAddress ?: "unknown",
                         port = port
                     )
-                    Log.d(TAG, "Found device: ${device.alias} at ${device.address}:${device.port}")
+                    Log.d(TAG, "Found device via multicast: ${device.alias} at ${device.address}:${device.port}")
+                    deviceFound = true
                     onDeviceFound(device)
                 } catch (_: java.net.SocketTimeoutException) {
                     // Normal timeout, keep listening
@@ -148,6 +164,77 @@ class Discovery(private val context: Context) {
         }
     }
 
+    private suspend fun subnetScan(onDeviceFound: (DeviceInfo) -> Unit) {
+        val localIP = getLocalIPAddress()
+        if (localIP == null) {
+            Log.w(TAG, "Could not determine local IP for subnet scan")
+            return
+        }
+
+        val subnet = localIP.substringBeforeLast(".")
+        Log.d(TAG, "Starting subnet scan on $subnet.0/24 (local=$localIP)")
+
+        val scanJobs = mutableListOf<Job>()
+        for (i in 1..254) {
+            val ip = "$subnet.$i"
+            if (ip == localIP) continue
+            if (deviceFound) break
+
+            scanJobs.add(scope.launch {
+                try {
+                    val url = URL("http://$ip:$PORT/api/ping")
+                    val connection = url.openConnection() as HttpURLConnection
+                    connection.connectTimeout = 500
+                    connection.readTimeout = 500
+                    connection.requestMethod = "GET"
+
+                    val responseCode = connection.responseCode
+                    if (responseCode == 200) {
+                        val response = connection.inputStream.bufferedReader().readText()
+                        if (response == "pong") {
+                            val device = DeviceInfo(
+                                alias = ip,
+                                deviceType = "desktop",
+                                fingerprint = "fallback",
+                                address = ip,
+                                port = PORT
+                            )
+                            Log.d(TAG, "Found device via subnet scan at $ip")
+                            deviceFound = true
+                            onDeviceFound(device)
+                        }
+                    }
+                    connection.disconnect()
+                } catch (_: Exception) {
+                    // Expected for most IPs
+                }
+            })
+        }
+
+        scanJobs.forEach { it.join() }
+        Log.d(TAG, "Subnet scan completed")
+
+        // Repeat scan every 15 seconds if still no device found
+        if (!deviceFound && fallbackJob?.isActive == true) {
+            delay(15000)
+            if (!deviceFound) {
+                subnetScan(onDeviceFound)
+            }
+        }
+    }
+
+    private fun getLocalIPAddress(): String? {
+        return try {
+            NetworkInterface.getNetworkInterfaces()?.toList()
+                ?.flatMap { it.inetAddresses.toList() }
+                ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+                ?.hostAddress
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get local IP", e)
+            null
+        }
+    }
+
     private fun getWifiNetworkInterface(): NetworkInterface? {
         return try {
             NetworkInterface.getNetworkInterfaces()?.toList()?.firstOrNull { ni ->
@@ -164,6 +251,7 @@ class Discovery(private val context: Context) {
     fun stopDiscovery() {
         listenJob?.cancel()
         announceJob?.cancel()
+        fallbackJob?.cancel()
         multicastLock?.release()
         Log.d(TAG, "Discovery stopped")
     }
