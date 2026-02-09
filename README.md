@@ -63,7 +63,7 @@ Requires: Xcode 15+, macOS 13+
 GitHub Actions builds both platforms automatically:
 - **Build Android APK** — on every push to `main` or `claude/*`
 - **Build macOS App** — on every push to `main` or `claude/*`
-- **Release** — on tag push (`v*`) or manual trigger, creates GitHub Release with APK + DMG
+- **Release** — on push to main/claude branches or manual trigger, creates GitHub Release with APK + DMG
 
 ## Architecture
 
