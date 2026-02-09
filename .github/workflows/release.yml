@@ -26,11 +26,23 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Build Android APKs
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug assembleRelease --stacktrace --no-daemon
+          ./gradlew assembleDebug assembleRelease --stacktrace
+
+      - name: List build outputs
+        if: always()
+        run: |
+          echo "=== Debug APK ==="
+          find android/app/build/outputs -name "*.apk" -type f 2>/dev/null || echo "No APKs found"
+          echo "=== All outputs ==="
+          ls -la android/app/build/outputs/apk/debug/ 2>/dev/null || echo "No debug dir"
+          ls -la android/app/build/outputs/apk/release/ 2>/dev/null || echo "No release dir"
 
       - name: Prepare artifacts
         run: |
