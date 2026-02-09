@@ -139,27 +139,42 @@ class SyncManager: ObservableObject {
 
     func connectByIP(_ ip: String, port: Int = Int(Discovery.port)) {
         connectionStatus = "Connecting..."
-        AppLog.add("[SyncManager] Connecting by IP to \(ip):\(port)...")
+        AppLog.add("[SyncManager] Connecting by IP to \(ip), trying ports \(port), \(port+1), \(port+2)...")
 
-        rawPing(host: ip, port: UInt16(port)) { [weak self] reachable in
-            guard let self = self else { return }
+        // Try the standard port, then alternates (in case of port conflict)
+        let portsToTry: [UInt16] = [UInt16(port), UInt16(port + 1), UInt16(port + 2)]
+        tryNextPort(ip: ip, ports: portsToTry, index: 0)
+    }
+
+    private func tryNextPort(ip: String, ports: [UInt16], index: Int) {
+        guard index < ports.count else {
             DispatchQueue.main.async {
-                if reachable {
+                self.connectionStatus = "Failed to connect to \(ip)"
+                AppLog.add("[SyncManager] ERROR: Failed to connect to \(ip) on all ports")
+            }
+            return
+        }
+
+        let port = ports[index]
+        rawPing(host: ip, port: port) { [weak self] reachable in
+            guard let self = self else { return }
+            if reachable {
+                DispatchQueue.main.async {
                     let device = DeviceInfo(
                         alias: ip,
                         deviceType: "mobile",
                         fingerprint: "manual",
                         address: ip,
-                        port: port
+                        port: Int(port)
                     )
                     self.connectedDevice = device
                     self.syncClient = SyncClient(peer: device, fingerprint: self.fingerprint)
-                    self.connectionStatus = "Connected to \(ip)"
+                    self.connectionStatus = "Connected to \(ip):\(port)"
                     AppLog.add("[SyncManager] Connected to \(ip):\(port)")
-                } else {
-                    self.connectionStatus = "Failed to connect to \(ip)"
-                    AppLog.add("[SyncManager] ERROR: Failed to connect to \(ip):\(port)")
                 }
+            } else {
+                AppLog.add("[SyncManager] Port \(port) failed, trying next...")
+                self.tryNextPort(ip: ip, ports: ports, index: index + 1)
             }
         }
     }

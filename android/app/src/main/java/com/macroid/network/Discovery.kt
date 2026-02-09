@@ -35,6 +35,7 @@ class Discovery(private val context: Context) {
     private var multicastLock: WifiManager.MulticastLock? = null
     private val gson = Gson()
     val fingerprint: String = UUID.randomUUID().toString().take(8)
+    var announcePort: Int = PORT
 
     private val deviceAlias: String = android.os.Build.MODEL ?: "Android"
 
@@ -44,7 +45,7 @@ class Discovery(private val context: Context) {
         "deviceModel" to (android.os.Build.MODEL ?: "Unknown"),
         "deviceType" to "mobile",
         "fingerprint" to fingerprint,
-        "port" to PORT,
+        "port" to announcePort,
         "protocol" to "http",
         "download" to false
     )

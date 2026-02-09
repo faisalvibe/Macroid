@@ -78,6 +78,11 @@ fun MacroidApp() {
                 }
             }
 
+            syncServer.onReady = {
+                discovery.announcePort = syncServer.actualPort
+                AppLog.add("[MacroidApp] Server ready on port ${syncServer.actualPort}")
+            }
+
             syncServer.start(onClipboardReceived = { incomingText ->
                 if (incomingText != clipboardText) {
                     clipboardText = incomingText
@@ -89,8 +94,6 @@ fun MacroidApp() {
                 clipboardMonitor.writeImageToClipboard(imageBytes)
                 AppLog.add("[MacroidApp] Received remote image (${imageBytes.size} bytes)")
             })
-
-            AppLog.add("[MacroidApp] Server started on port ${Discovery.PORT}")
 
             discovery.startDiscovery { device ->
                 onDeviceFound(device)
@@ -157,26 +160,36 @@ fun MacroidApp() {
             },
             onConnectByIP = { ip ->
                 connectionStatus = "Connecting..."
-                AppLog.add("[MacroidApp] Connecting by IP to $ip:${Discovery.PORT}...")
+                val portsToTry = listOf(Discovery.PORT, Discovery.PORT + 1, Discovery.PORT + 2)
+                AppLog.add("[MacroidApp] Connecting by IP to $ip, trying ports $portsToTry...")
                 CoroutineScope(Dispatchers.IO).launch {
-                    val device = DeviceInfo(
-                        alias = ip,
-                        deviceType = "desktop",
-                        fingerprint = "manual",
-                        address = ip,
-                        port = Discovery.PORT
-                    )
-                    val reachable = pingDevice(device)
-                    CoroutineScope(Dispatchers.Main).launch {
+                    var connected = false
+                    for (port in portsToTry) {
+                        val device = DeviceInfo(
+                            alias = ip,
+                            deviceType = "desktop",
+                            fingerprint = "manual",
+                            address = ip,
+                            port = port
+                        )
+                        val reachable = pingDevice(device)
                         if (reachable) {
-                            connectedDevice = device
-                            isSearching = false
-                            syncClient.setPeer(device)
-                            connectionStatus = "Connected to $ip"
-                            AppLog.add("[MacroidApp] Connected to $ip")
-                        } else {
+                            CoroutineScope(Dispatchers.Main).launch {
+                                connectedDevice = device
+                                isSearching = false
+                                syncClient.setPeer(device)
+                                connectionStatus = "Connected to $ip:$port"
+                                AppLog.add("[MacroidApp] Connected to $ip:$port")
+                            }
+                            connected = true
+                            break
+                        }
+                        AppLog.add("[MacroidApp] Port $port failed, trying next...")
+                    }
+                    if (!connected) {
+                        CoroutineScope(Dispatchers.Main).launch {
                             connectionStatus = "Failed to connect to $ip"
-                            AppLog.add("[MacroidApp] ERROR: Failed to connect to $ip")
+                            AppLog.add("[MacroidApp] ERROR: Failed to connect to $ip on all ports")
                         }
                     }
                 }
