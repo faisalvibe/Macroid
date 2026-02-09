@@ -38,6 +38,7 @@ class SyncServer(
     private var lastClipboard = ""
     private var lastTimestamp = 0L
     var onDeviceRegistered: ((DeviceInfo) -> Unit)? = null
+    var onPeerActivity: ((String, Int) -> Unit)? = null
     var onReady: (() -> Unit)? = null
     var actualPort: Int = Discovery.PORT
         private set
@@ -82,8 +83,10 @@ class SyncServer(
                             if (text.isNotEmpty() && timestamp > lastTimestamp) {
                                 lastTimestamp = timestamp
                                 lastClipboard = text
-                                Log.d(TAG, "Received clipboard (${text.length} chars) from origin=$origin")
-                                AppLog.add("[SyncServer] Received clipboard (${text.length} chars) from origin=$origin")
+                                val remoteAddress = call.request.local.remoteAddress
+                                Log.d(TAG, "Received clipboard (${text.length} chars) from origin=$origin addr=$remoteAddress")
+                                AppLog.add("[SyncServer] Received clipboard (${text.length} chars) from $remoteAddress")
+                                onPeerActivity?.invoke(remoteAddress, Discovery.PORT)
                                 CoroutineScope(Dispatchers.Main).launch {
                                     onClipboardReceivedCallback?.invoke(text)
                                 }

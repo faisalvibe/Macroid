@@ -288,38 +288,47 @@ class Discovery {
     }
 
     private func tryInfoEndpoint(ip: String) -> DeviceInfo? {
-        guard let data = rawHTTPGet(ip: ip, port: Discovery.port, path: "/api/localsend/v2/info"),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        // Try standard port and alternates
+        let portsToTry: [UInt16] = [Discovery.port, Discovery.port + 1, Discovery.port + 2]
+        for port in portsToTry {
+            guard let data = rawHTTPGet(ip: ip, port: port, path: "/api/localsend/v2/info"),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
 
-        guard let fp = json["fingerprint"] as? String, fp != String(fingerprint) else { return nil }
-        let deviceType = json["deviceType"] as? String ?? "unknown"
-        guard deviceType == "mobile" else { return nil }
+            guard let fp = json["fingerprint"] as? String, fp != String(fingerprint) else { continue }
+            let deviceType = json["deviceType"] as? String ?? "unknown"
+            guard deviceType == "mobile" else { continue }
 
-        let device = DeviceInfo(
-            alias: json["alias"] as? String ?? ip,
-            deviceType: deviceType,
-            fingerprint: fp,
-            address: ip,
-            port: json["port"] as? Int ?? Int(Discovery.port)
-        )
-        AppLog.add("[Discovery] Fallback info found device at \(ip): \(device.alias)")
-        return device
+            let device = DeviceInfo(
+                alias: json["alias"] as? String ?? ip,
+                deviceType: deviceType,
+                fingerprint: fp,
+                address: ip,
+                port: json["port"] as? Int ?? Int(port)
+            )
+            AppLog.add("[Discovery] Fallback info found device at \(ip):\(port): \(device.alias)")
+            return device
+        }
+        return nil
     }
 
     private func tryPingEndpoint(ip: String) -> DeviceInfo? {
-        guard let data = rawHTTPGet(ip: ip, port: Discovery.port, path: "/api/ping"),
-              let response = String(data: data, encoding: .utf8),
-              response.contains("pong") else { return nil }
+        let portsToTry: [UInt16] = [Discovery.port, Discovery.port + 1, Discovery.port + 2]
+        for port in portsToTry {
+            guard let data = rawHTTPGet(ip: ip, port: port, path: "/api/ping"),
+                  let response = String(data: data, encoding: .utf8),
+                  response.contains("pong") else { continue }
 
-        let device = DeviceInfo(
-            alias: ip,
-            deviceType: "mobile",
-            fingerprint: "fallback",
-            address: ip,
-            port: Int(Discovery.port)
-        )
-        AppLog.add("[Discovery] Fallback ping found device at \(ip)")
-        return device
+            let device = DeviceInfo(
+                alias: ip,
+                deviceType: "mobile",
+                fingerprint: "fallback",
+                address: ip,
+                port: Int(port)
+            )
+            AppLog.add("[Discovery] Fallback ping found device at \(ip):\(port)")
+            return device
+        }
+        return nil
     }
 
     func getLocalIPAddress() -> String? {

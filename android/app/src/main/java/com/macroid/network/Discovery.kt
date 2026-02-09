@@ -261,50 +261,58 @@ class Discovery(private val context: Context) {
     }
 
     private fun tryInfoEndpoint(ip: String): DeviceInfo? {
-        return try {
-            val url = URL("http://$ip:$PORT/api/localsend/v2/info")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 500
-            connection.readTimeout = 1000
-            connection.requestMethod = "GET"
-            val response = connection.inputStream.bufferedReader().readText()
-            connection.disconnect()
+        val portsToTry = listOf(PORT, PORT + 1, PORT + 2)
+        for (port in portsToTry) {
+            try {
+                val url = URL("http://$ip:$port/api/localsend/v2/info")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.connectTimeout = 500
+                connection.readTimeout = 1000
+                connection.requestMethod = "GET"
+                val response = connection.inputStream.bufferedReader().readText()
+                connection.disconnect()
 
-            val info = gson.fromJson(response, Map::class.java)
-            val fp = info["fingerprint"] as? String ?: return null
-            if (fp == fingerprint) return null
-            val deviceType = info["deviceType"] as? String ?: "unknown"
-            if (deviceType == "mobile") return null
+                val info = gson.fromJson(response, Map::class.java)
+                val fp = info["fingerprint"] as? String ?: continue
+                if (fp == fingerprint) continue
+                val deviceType = info["deviceType"] as? String ?: "unknown"
+                if (deviceType == "mobile") continue
 
-            DeviceInfo(
-                alias = info["alias"] as? String ?: ip,
-                deviceType = deviceType,
-                fingerprint = fp,
-                address = ip,
-                port = (info["port"] as? Double)?.toInt() ?: PORT
-            )
-        } catch (_: Exception) { null }
+                return DeviceInfo(
+                    alias = info["alias"] as? String ?: ip,
+                    deviceType = deviceType,
+                    fingerprint = fp,
+                    address = ip,
+                    port = (info["port"] as? Double)?.toInt() ?: port
+                )
+            } catch (_: Exception) { }
+        }
+        return null
     }
 
     private fun tryPingEndpoint(ip: String): DeviceInfo? {
-        return try {
-            val url = URL("http://$ip:$PORT/api/ping")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 500
-            connection.readTimeout = 1000
-            connection.requestMethod = "GET"
-            val response = connection.inputStream.bufferedReader().readText()
-            connection.disconnect()
-            if (response == "pong") {
-                DeviceInfo(
-                    alias = ip,
-                    deviceType = "desktop",
-                    fingerprint = "scan-$ip",
-                    address = ip,
-                    port = PORT
-                )
-            } else null
-        } catch (_: Exception) { null }
+        val portsToTry = listOf(PORT, PORT + 1, PORT + 2)
+        for (port in portsToTry) {
+            try {
+                val url = URL("http://$ip:$port/api/ping")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.connectTimeout = 500
+                connection.readTimeout = 1000
+                connection.requestMethod = "GET"
+                val response = connection.inputStream.bufferedReader().readText()
+                connection.disconnect()
+                if (response == "pong") {
+                    return DeviceInfo(
+                        alias = ip,
+                        deviceType = "desktop",
+                        fingerprint = "scan-$ip",
+                        address = ip,
+                        port = port
+                    )
+                }
+            } catch (_: Exception) { }
+        }
+        return null
     }
 
     fun getLocalIPAddress(): String? {

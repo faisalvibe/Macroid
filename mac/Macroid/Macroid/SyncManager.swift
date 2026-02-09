@@ -171,11 +171,48 @@ class SyncManager: ObservableObject {
                     self.syncClient = SyncClient(peer: device, fingerprint: self.fingerprint)
                     self.connectionStatus = "Connected to \(ip):\(port)"
                     AppLog.add("[SyncManager] Connected to \(ip):\(port)")
+                    // Register with the peer so it knows we're connected
+                    self.registerWithPeer(ip: ip, port: port)
                 }
             } else {
                 AppLog.add("[SyncManager] Port \(port) failed, trying next...")
                 self.tryNextPort(ip: ip, ports: ports, index: index + 1)
             }
+        }
+    }
+
+    /// Register with the peer so it knows we're connected
+    private func registerWithPeer(ip: String, port: UInt16) {
+        guard let disc = discovery,
+              let body = try? JSONSerialization.data(withJSONObject: disc.getDeviceInfo()),
+              let nwPort = NWEndpoint.Port(rawValue: port) else { return }
+
+        let connection = NWConnection(host: NWEndpoint.Host(ip), port: nwPort, using: .tcp)
+        var completed = false
+
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                let httpRequest = "POST /api/localsend/v2/register HTTP/1.1\r\nHost: \(ip):\(port)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+                var requestData = httpRequest.data(using: .utf8)!
+                requestData.append(body)
+                connection.send(content: requestData, completion: .contentProcessed { _ in
+                    if !completed {
+                        completed = true
+                        AppLog.add("[SyncManager] Register sent to \(ip):\(port)")
+                    }
+                    connection.cancel()
+                })
+            case .failed(_):
+                if !completed { completed = true }
+                connection.cancel()
+            default:
+                break
+            }
+        }
+        connection.start(queue: syncQueue)
+        syncQueue.asyncAfter(deadline: .now() + 3) {
+            if !completed { completed = true; connection.cancel() }
         }
     }
 

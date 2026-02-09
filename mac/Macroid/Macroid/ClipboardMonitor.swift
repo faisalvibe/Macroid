@@ -101,6 +101,21 @@ class ClipboardMonitor {
            let bitmapRep = NSBitmapImageRep(data: tiffData) {
             return bitmapRep.representation(using: .png, properties: [:])
         }
+        // Check for file URLs pointing to image files
+        if pasteboard.types?.contains(.fileURL) == true,
+           let urlString = pasteboard.string(forType: .fileURL),
+           let url = URL(string: urlString) {
+            let ext = url.pathExtension.lowercased()
+            if ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp", "heic"].contains(ext) {
+                if let data = try? Data(contentsOf: url) {
+                    if let image = NSImage(data: data),
+                       let tiffRep = image.tiffRepresentation,
+                       let bitmapRep = NSBitmapImageRep(data: tiffRep) {
+                        return bitmapRep.representation(using: .png, properties: [:])
+                    }
+                }
+            }
+        }
         return nil
     }
 

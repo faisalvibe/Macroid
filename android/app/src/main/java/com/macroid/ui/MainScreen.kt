@@ -434,8 +434,7 @@ private fun StatusBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -443,42 +442,43 @@ private fun StatusBar(
                 .size(8.dp)
                 .clip(CircleShape)
                 .background(
-                    if (connectedDevice != null) Color(0xFF34C759) else Color(0xFFFF3B30)
+                    if (connectedDevice != null) Color(0xFF34C759) else Color(0xFFFF9500)
                 )
         )
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.width(10.dp))
 
         if (connectedDevice != null) {
-            Text(
-                text = "Connected to: ${connectedDevice.alias}",
-                style = TextStyle(
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Connected to: ${connectedDevice.alias}",
+                    style = TextStyle(
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
                 )
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = connectedDevice.address,
-                style = TextStyle(
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                Text(
+                    text = connectedDevice.address,
+                    style = TextStyle(
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                    )
                 )
-            )
+            }
         } else {
             Text(
                 text = if (isSearching) "Searching for devices..." else "Not connected",
                 style = TextStyle(
                     fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+                ),
+                modifier = Modifier.weight(1f)
             )
-            Spacer(modifier = Modifier.weight(1f))
             TextButton(onClick = { showConnectDialog = true }) {
                 Text(
                     text = "Connect by IP",
                     style = TextStyle(
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.primary
                     )
                 )

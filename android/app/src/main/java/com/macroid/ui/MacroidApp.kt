@@ -78,6 +78,24 @@ fun MacroidApp() {
                 }
             }
 
+            syncServer.onPeerActivity = { address, port ->
+                if (connectedDevice == null) {
+                    val device = DeviceInfo(
+                        alias = address,
+                        deviceType = "desktop",
+                        fingerprint = "peer-$address",
+                        address = address,
+                        port = port
+                    )
+                    CoroutineScope(Dispatchers.Main).launch {
+                        connectedDevice = device
+                        isSearching = false
+                        syncClient.setPeer(device)
+                        AppLog.add("[MacroidApp] Peer detected via clipboard: $address")
+                    }
+                }
+            }
+
             syncServer.onReady = {
                 discovery.announcePort = syncServer.actualPort
                 AppLog.add("[MacroidApp] Server ready on port ${syncServer.actualPort}")

@@ -4,40 +4,36 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Blue circle background -->
-    <path
-        android:fillColor="#4A90D9"
-        android:pathData="M54,24 C70.569,24 84,37.431 84,54 C84,70.569 70.569,84 54,84 C37.431,84 24,70.569 24,54 C24,37.431 37.431,24 54,24Z" />
     <!-- Mac device (left) -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M38,42 L52,42 C53.1,42 54,42.9 54,44 L54,56 C54,57.1 53.1,58 52,58 L38,58 C36.9,58 36,57.1 36,56 L36,44 C36,42.9 36.9,42 38,42Z" />
+        android:pathData="M32,38 L50,38 C51.65,38 53,39.35 53,41 L53,57 C53,58.65 51.65,60 50,60 L32,60 C30.35,60 29,58.65 29,57 L29,41 C29,39.35 30.35,38 32,38Z" />
     <path
         android:fillColor="#4A90D9"
-        android:pathData="M39,44 L51,44 L51,54 L39,54Z" />
+        android:pathData="M33.5,40.5 L48.5,40.5 L48.5,55 L33.5,55Z" />
+    <!-- Mac stand -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M43,58 L47,58 L47,60 L43,60Z" />
+        android:pathData="M38,60 L44,60 L44,63 L38,63Z" />
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M41,60 L49,60 L49,61 L41,61Z" />
+        android:pathData="M35,63 L47,63 L47,64.5 L35,64.5Z" />
     <!-- Phone device (right) -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M60,40 L70,40 C71.1,40 72,40.9 72,42 L72,62 C72,63.1 71.1,64 70,64 L60,64 C58.9,64 58,63.1 58,62 L58,42 C58,40.9 58.9,40 60,40Z" />
+        android:pathData="M60,36 L73,36 C74.65,36 76,37.35 76,39 L76,65 C76,66.65 74.65,68 73,68 L60,68 C58.35,68 57,66.65 57,65 L57,39 C57,37.35 58.35,36 60,36Z" />
     <path
         android:fillColor="#4A90D9"
-        android:pathData="M60,43 L70,43 L70,60 L60,60Z" />
+        android:pathData="M59.5,40 L73.5,40 L73.5,62 L59.5,62Z" />
+    <!-- Phone home button -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M63.5,61 C63.5,61.828 64.172,62.5 65,62.5 C65.828,62.5 66.5,61.828 66.5,61 C66.5,60.172 65.828,59.5 65,59.5 C64.172,59.5 63.5,60.172 63.5,61Z" />
-    <!-- Sync arrows -->
+        android:pathData="M65,63.5 C65,64.88 65.62,66 66.5,66 C67.38,66 68,64.88 68,63.5 C68,62.12 67.38,61 66.5,61 C65.62,61 65,62.12 65,63.5Z" />
+    <!-- Sync arrows (between devices) -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M54,48 L58,51 L54,54Z"
-        android:strokeWidth="0" />
+        android:pathData="M52,46 L57,49.5 L52,53Z" />
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M58,46 L54,49 L58,52Z"
-        android:strokeWidth="0" />
+        android:pathData="M57,44 L52,47.5 L57,51Z" />
 </vector>
