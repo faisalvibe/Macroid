@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 jobs:
-  build-android:
+  build-and-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,87 +29,14 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Debug APK
+      - name: Build Android APKs
         working-directory: android
-        run: ./gradlew assembleDebug
-
-      - name: Build Release APK
-        working-directory: android
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleDebug assembleRelease --stacktrace
 
       - name: Rename APKs
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk Macroid-debug.apk
           cp android/app/build/outputs/apk/release/app-release-unsigned.apk Macroid-release.apk
-
-      - name: Upload APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-apks
-          path: |
-            Macroid-debug.apk
-            Macroid-release.apk
-
-  build-mac:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: |
-          if [ -d "/Applications/Xcode_15.4.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_15.4.app
-          elif [ -d "/Applications/Xcode_15.2.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_15.2.app
-          else
-            echo "Using default Xcode"
-          fi
-
-      - name: Build macOS App
-        working-directory: mac/Macroid
-        run: |
-          xcodebuild -project Macroid.xcodeproj \
-            -scheme Macroid \
-            -configuration Release \
-            -derivedDataPath build \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO
-
-      - name: Create DMG
-        working-directory: mac/Macroid
-        run: |
-          APP_PATH="build/Build/Products/Release/Macroid.app"
-          DMG_PATH="Macroid.dmg"
-          mkdir -p dmg_contents
-          cp -R "$APP_PATH" dmg_contents/
-          ln -s /Applications dmg_contents/Applications
-          hdiutil create -volname "Macroid" -srcfolder dmg_contents -ov -format UDZO "$DMG_PATH"
-
-      - name: Upload DMG
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-dmg
-          path: mac/Macroid/Macroid.dmg
-
-  release:
-    needs: [build-android, build-mac]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Android APKs
-        uses: actions/download-artifact@v4
-        with:
-          name: android-apks
-          path: artifacts/
-
-      - name: Download macOS DMG
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-dmg
-          path: artifacts/
 
       - name: Determine tag
         id: tag
@@ -135,7 +62,6 @@ jobs:
             ### Downloads
             - **Macroid-debug.apk** - Android debug build (can install directly)
             - **Macroid-release.apk** - Android release build (unsigned)
-            - **Macroid.dmg** - macOS app (drag to Applications)
 
             ### What's New
             - Origin-based sync loop prevention
@@ -149,10 +75,8 @@ jobs:
 
             ### Installation
             **Android:** Download `Macroid-debug.apk`, enable "Install from unknown sources", install.
-            **Mac:** Download `Macroid.dmg`, open, drag Macroid to Applications. On first launch, right-click > Open to bypass Gatekeeper.
           files: |
-            artifacts/Macroid-debug.apk
-            artifacts/Macroid-release.apk
-            artifacts/Macroid.dmg
+            Macroid-debug.apk
+            Macroid-release.apk
           draft: false
           prerelease: false
