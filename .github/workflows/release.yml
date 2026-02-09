@@ -33,7 +33,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macroid-release-apk
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
 
   build-mac:
     runs-on: macos-14
@@ -99,7 +99,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ github.event.inputs.tag_name }}"
-          mv app-release-unsigned.apk "Macroid-${TAG}-android.apk"
+          mv app-release.apk "Macroid-${TAG}-android.apk"
           mv Macroid.dmg "Macroid-${TAG}-macos.dmg"
           gh release create "$TAG" \
             --title "Macroid $TAG" \

@@ -40,7 +40,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macroid-release
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
 
   release:
     needs: build
@@ -75,7 +75,7 @@ jobs:
         run: |
           TAG="v${{ steps.version.outputs.version }}"
           mv app-debug.apk Macroid-debug.apk
-          mv app-release-unsigned.apk Macroid-release.apk
+          mv app-release.apk Macroid-release.apk
           if gh release view "$TAG" &>/dev/null; then
             echo "Release $TAG already exists, skipping"
           else
