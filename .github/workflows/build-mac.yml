@@ -9,20 +9,20 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
         run: |
-          if [ -d "/Applications/Xcode_15.4.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_15.4.app
-          elif [ -d "/Applications/Xcode_15.2.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_15.2.app
-          else
-            echo "Using default Xcode"
+          # Use latest available Xcode
+          XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XCODE" ]; then
+            sudo xcode-select -s "$XCODE"
+            echo "Using $XCODE"
           fi
+          xcodebuild -version
 
       - name: Build macOS App
         working-directory: mac/Macroid
@@ -51,9 +51,3 @@ jobs:
         with:
           name: macroid-macos
           path: mac/Macroid/Macroid.dmg
-
-      - name: Upload App
-        uses: actions/upload-artifact@v4
-        with:
-          name: macroid-macos-app
-          path: mac/Macroid/build/Build/Products/Release/Macroid.app
