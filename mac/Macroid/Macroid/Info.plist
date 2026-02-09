@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Macroid</string>
+    <key>CFBundleDisplayName</key>
+    <string>Macroid</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.macroid.app</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>Macroid</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Macroid needs local network access to discover and sync with your Android device.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_macroid._tcp</string>
+    </array>
+</dict>
+</plist>

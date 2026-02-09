@@ -1,0 +1,26 @@
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+
+# macOS
+mac/Macroid/build/
+mac/Macroid/DerivedData/
+mac/Macroid/Macroid.xcodeproj/project.xcworkspace/
+mac/Macroid/Macroid.xcodeproj/xcuserdata/
+
+# IDE
+.idea/
+*.iml
+*.DS_Store
+*.swp
+*~
+
+# Builds
+*.apk
+*.dmg
+*.ipa
