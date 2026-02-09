@@ -1,5 +1,8 @@
 import Foundation
 import Network
+import os.log
+
+private let log = Logger(subsystem: "com.macroid", category: "Discovery")
 
 class Discovery {
     static let multicastGroup = "224.0.0.167"
@@ -10,7 +13,7 @@ class Discovery {
     private var listener: NWListener?
     private var multicastGroup: NWConnectionGroup?
     private let queue = DispatchQueue(label: "com.macroid.discovery")
-    private let fingerprint = UUID().uuidString.prefix(8).lowercased()
+    let fingerprint = UUID().uuidString.prefix(8).lowercased()
 
     private var announcement: [String: Any] {
         return [
@@ -27,6 +30,7 @@ class Discovery {
     }
 
     func startDiscovery(onDeviceFound: @escaping (DeviceInfo) -> Void) {
+        log.info("Starting discovery with fingerprint: \(String(self.fingerprint))")
         startMulticastListener(onDeviceFound: onDeviceFound)
         startAnnouncing()
     }
@@ -44,19 +48,19 @@ class Discovery {
 
             groupConnection.setReceiveHandler(maximumMessageSize: 4096, rejectOversizedMessages: true) { [weak self] message, content, isComplete in
                 guard let self = self, let data = content else { return }
-
                 self.handleReceivedData(data, from: message, onDeviceFound: onDeviceFound)
             }
 
             groupConnection.stateUpdateHandler = { state in
-                // Connection group state changed
+                log.debug("Multicast group state: \(String(describing: state))")
             }
 
             groupConnection.start(queue: queue)
             self.multicastGroup = groupConnection
+            log.info("Multicast listener started on \(Discovery.multicastGroup):\(Discovery.port)")
 
         } catch {
-            // Multicast setup failed, fall back to manual discovery
+            log.error("Multicast setup failed: \(error.localizedDescription), using fallback discovery")
             startFallbackDiscovery(onDeviceFound: onDeviceFound)
         }
     }
@@ -86,6 +90,7 @@ class Discovery {
             port: port
         )
 
+        log.info("Found device: \(device.alias) at \(device.address):\(device.port)")
         onDeviceFound(device)
     }
 
@@ -103,26 +108,42 @@ class Discovery {
         guard let data = try? JSONSerialization.data(withJSONObject: announcement) else { return }
 
         multicastGroup?.send(content: data) { error in
-            // Announcement sent (or failed)
+            if let error = error {
+                log.warning("Announcement send failed: \(error.localizedDescription)")
+            }
         }
     }
 
     private func startFallbackDiscovery(onDeviceFound: @escaping (DeviceInfo) -> Void) {
-        // Scan local subnet for Macroid devices
-        guard let localIP = getLocalIPAddress() else { return }
+        guard let localIP = getLocalIPAddress() else {
+            log.error("Could not determine local IP for fallback discovery")
+            return
+        }
         let subnet = localIP.components(separatedBy: ".").prefix(3).joined(separator: ".")
+        log.info("Starting fallback subnet scan on \(subnet).0/24")
 
-        queue.async {
-            for i in 1...254 {
-                let ip = "\(subnet).\(i)"
-                if ip == localIP { continue }
+        let scanQueue = DispatchQueue(label: "com.macroid.scan", attributes: .concurrent)
+        let group = DispatchGroup()
+
+        for i in 1...254 {
+            let ip = "\(subnet).\(i)"
+            if ip == localIP { continue }
+
+            group.enter()
+            scanQueue.async {
+                defer { group.leave() }
 
                 let url = URL(string: "http://\(ip):\(Discovery.port)/api/ping")!
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 0.5
 
+                let config = URLSessionConfiguration.ephemeral
+                config.timeoutIntervalForRequest = 0.5
+                config.timeoutIntervalForResource = 1.0
+                let session = URLSession(configuration: config)
+
                 let semaphore = DispatchSemaphore(value: 0)
-                let task = URLSession.shared.dataTask(with: request) { data, response, error in
+                let task = session.dataTask(with: request) { data, response, error in
                     defer { semaphore.signal() }
                     guard error == nil, let data = data,
                           String(data: data, encoding: .utf8) == "pong" else { return }
@@ -134,11 +155,17 @@ class Discovery {
                         address: ip,
                         port: Int(Discovery.port)
                     )
+                    log.info("Fallback found device at \(ip)")
                     onDeviceFound(device)
                 }
                 task.resume()
-                semaphore.wait()
+                semaphore.wait(timeout: .now() + 1.0)
+                session.invalidateAndCancel()
             }
+        }
+
+        group.notify(queue: queue) {
+            log.info("Fallback subnet scan completed")
         }
     }
 
@@ -177,5 +204,6 @@ class Discovery {
         announceTimer = nil
         multicastGroup?.cancel()
         multicastGroup = nil
+        log.info("Discovery stopped")
     }
 }

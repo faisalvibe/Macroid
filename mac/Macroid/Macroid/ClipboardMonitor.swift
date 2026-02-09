@@ -1,13 +1,17 @@
 import Foundation
 import AppKit
+import os.log
+
+private let log = Logger(subsystem: "com.macroid", category: "ClipboardMonitor")
 
 class ClipboardMonitor {
     private var timer: DispatchSourceTimer?
     private var lastChangeCount: Int = 0
     private var lastText: String = ""
-    private var ignoreNextChange = false
+    private var lastRemoteText: String = ""
     private let pasteboard = NSPasteboard.general
     private let queue = DispatchQueue(label: "com.macroid.clipboard")
+    private let lock = NSLock()
 
     func startMonitoring(onClipboardChanged: @escaping (String) -> Void) {
         lastChangeCount = pasteboard.changeCount
@@ -22,28 +26,37 @@ class ClipboardMonitor {
             if currentCount != self.lastChangeCount {
                 self.lastChangeCount = currentCount
 
-                if self.ignoreNextChange {
-                    self.ignoreNextChange = false
-                    return
-                }
-
                 let text = self.getCurrentClipboard()
                 if text != self.lastText {
                     self.lastText = text
-                    onClipboardChanged(text)
+
+                    self.lock.lock()
+                    let isEcho = (text == self.lastRemoteText)
+                    self.lock.unlock()
+
+                    if isEcho {
+                        log.debug("Skipping echo of remote text")
+                    } else {
+                        log.debug("Local clipboard changed (\(text.count) chars)")
+                        onClipboardChanged(text)
+                    }
                 }
             }
         }
         timer.resume()
         self.timer = timer
+        log.info("Clipboard monitoring started")
     }
 
     func writeToClipboard(_ text: String) {
-        ignoreNextChange = true
+        lock.lock()
+        lastRemoteText = text
+        lock.unlock()
         lastText = text
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         lastChangeCount = pasteboard.changeCount
+        log.debug("Wrote remote text to clipboard (\(text.count) chars)")
     }
 
     private func getCurrentClipboard() -> String {
@@ -53,5 +66,6 @@ class ClipboardMonitor {
     func stopMonitoring() {
         timer?.cancel()
         timer = nil
+        log.info("Clipboard monitoring stopped")
     }
 }

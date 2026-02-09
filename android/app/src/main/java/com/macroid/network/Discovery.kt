@@ -2,6 +2,7 @@ package com.macroid.network
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.util.Log
 import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,7 @@ import java.util.UUID
 class Discovery(private val context: Context) {
 
     companion object {
+        private const val TAG = "Discovery"
         const val MULTICAST_GROUP = "224.0.0.167"
         const val PORT = 53317
         private const val ANNOUNCE_INTERVAL_MS = 3000L
@@ -28,7 +30,7 @@ class Discovery(private val context: Context) {
     private var announceJob: Job? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private val gson = Gson()
-    private val fingerprint = UUID.randomUUID().toString().take(8)
+    val fingerprint: String = UUID.randomUUID().toString().take(8)
 
     private val announcement: Map<String, Any> = mapOf(
         "alias" to (android.os.Build.MODEL ?: "Android"),
@@ -48,6 +50,7 @@ class Discovery(private val context: Context) {
         multicastLock = wifiManager.createMulticastLock("macroid_multicast")
         multicastLock?.setReferenceCounted(true)
         multicastLock?.acquire()
+        Log.d(TAG, "Multicast lock acquired, starting discovery")
 
         listenJob = scope.launch {
             listenForDevices(onDeviceFound)
@@ -62,18 +65,20 @@ class Discovery(private val context: Context) {
         try {
             val socket = MulticastSocket(PORT)
             socket.reuseAddress = true
+            socket.soTimeout = 5000
 
             val group = InetAddress.getByName(MULTICAST_GROUP)
             val networkInterface = getWifiNetworkInterface()
             if (networkInterface != null) {
                 socket.networkInterface = networkInterface
+                Log.d(TAG, "Using network interface: ${networkInterface.displayName}")
             }
             socket.joinGroup(java.net.InetSocketAddress(group, PORT), networkInterface)
+            Log.d(TAG, "Joined multicast group $MULTICAST_GROUP:$PORT")
 
             val buffer = ByteArray(4096)
-            val scope = CoroutineScope(Dispatchers.IO)
 
-            while (scope.isActive) {
+            while (listenJob?.isActive == true) {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
                     socket.receive(packet)
@@ -97,16 +102,19 @@ class Discovery(private val context: Context) {
                         address = packet.address.hostAddress ?: "unknown",
                         port = port
                     )
+                    Log.d(TAG, "Found device: ${device.alias} at ${device.address}:${device.port}")
                     onDeviceFound(device)
-                } catch (_: Exception) {
-                    // Socket timeout or parse error, keep listening
+                } catch (_: java.net.SocketTimeoutException) {
+                    // Normal timeout, keep listening
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error receiving multicast packet", e)
                 }
             }
 
             socket.leaveGroup(java.net.InetSocketAddress(group, PORT), networkInterface)
             socket.close()
-        } catch (_: Exception) {
-            // Failed to set up multicast
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to set up multicast listener", e)
         }
     }
 
@@ -124,20 +132,19 @@ class Discovery(private val context: Context) {
             val json = gson.toJson(announcement)
             val bytes = json.toByteArray()
 
-            val scope = CoroutineScope(Dispatchers.IO)
-            while (scope.isActive) {
+            while (announceJob?.isActive == true) {
                 try {
                     val packet = DatagramPacket(bytes, bytes.size, group, PORT)
                     socket.send(packet)
-                } catch (_: Exception) {
-                    // Send failed, retry next interval
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to send announcement", e)
                 }
                 delay(ANNOUNCE_INTERVAL_MS)
             }
 
             socket.close()
-        } catch (_: Exception) {
-            // Failed to set up announce socket
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to set up announce socket", e)
         }
     }
 
@@ -148,7 +155,8 @@ class Discovery(private val context: Context) {
                     it is java.net.Inet4Address && !it.isLoopbackAddress
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get WiFi network interface", e)
             null
         }
     }
@@ -157,5 +165,6 @@ class Discovery(private val context: Context) {
         listenJob?.cancel()
         announceJob?.cancel()
         multicastLock?.release()
+        Log.d(TAG, "Discovery stopped")
     }
 }
