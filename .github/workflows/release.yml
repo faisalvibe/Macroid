@@ -4,18 +4,105 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release tag (e.g. v1.1.0)'
+        description: 'Release tag (e.g. v1.2.0)'
         required: true
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  build-android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Create Release
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Release APK
+        working-directory: android
+        run: ./gradlew assembleRelease
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: macroid-release-apk
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+
+  build-mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          elif [ -d "/Applications/Xcode_15.2.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.2.app
+          else
+            echo "Using default Xcode"
+          fi
+
+      - name: Build macOS App
+        working-directory: mac/Macroid
+        run: |
+          xcodebuild -project Macroid.xcodeproj \
+            -scheme Macroid \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Create DMG
+        working-directory: mac/Macroid
+        run: |
+          APP_PATH="build/Build/Products/Release/Macroid.app"
+          DMG_PATH="Macroid.dmg"
+          mkdir -p dmg_contents
+          cp -R "$APP_PATH" dmg_contents/
+          ln -s /Applications dmg_contents/Applications
+          hdiutil create -volname "Macroid" -srcfolder dmg_contents -ov -format UDZO "$DMG_PATH"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macroid-macos-dmg
+          path: mac/Macroid/Macroid.dmg
+
+  release:
+    needs: [build-android, build-mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: macroid-release-apk
+
+      - name: Download macOS DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: macroid-macos-dmg
+
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: echo "Manual release trigger for ${{ github.event.inputs.tag_name }}"
+        run: |
+          TAG="${{ github.event.inputs.tag_name }}"
+          mv app-release-unsigned.apk "Macroid-${TAG}-android.apk"
+          mv Macroid.dmg "Macroid-${TAG}-macos.dmg"
+          gh release create "$TAG" \
+            --title "Macroid $TAG" \
+            --generate-notes \
+            "Macroid-${TAG}-android.apk" \
+            "Macroid-${TAG}-macos.dmg"

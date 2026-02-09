@@ -19,7 +19,10 @@ class SyncClient {
     }
 
     func sendClipboard(_ text: String) {
-        let url = URL(string: "http://\(peer.address):\(peer.port)/api/clipboard")!
+        guard let url = URL(string: "http://\(peer.address):\(peer.port)/api/clipboard") else {
+            log.error("Invalid peer URL: \(self.peer.address):\(self.peer.port)")
+            return
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

@@ -13,9 +13,11 @@ class SyncServer {
     private var onClipboardReceived: ((String) -> Void)?
     private let deviceFingerprint: String
     private let maxBodySize = 1_048_576 // 1MB
+    private(set) var actualPort: UInt16
 
     init(fingerprint: String) {
         self.deviceFingerprint = fingerprint
+        self.actualPort = Discovery.port
     }
 
     func start(onClipboardReceived: @escaping (String) -> Void) {
@@ -25,16 +27,21 @@ class SyncServer {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
 
-            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+            guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+                log.error("Invalid port number: \(self.port)")
+                return
+            }
+            listener = try NWListener(using: params, on: nwPort)
 
             listener?.newConnectionHandler = { [weak self] connection in
                 self?.handleConnection(connection)
             }
 
-            listener?.stateUpdateHandler = { state in
+            listener?.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready:
-                    log.info("Server listening on port \(self.port)")
+                    self?.actualPort = self?.port ?? Discovery.port
+                    log.info("Server listening on port \(self?.port ?? 0)")
                 case .failed(let error):
                     log.error("Server failed: \(error.localizedDescription)")
                 default:
@@ -53,13 +60,18 @@ class SyncServer {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port + 1)!)
+            guard let altPort = NWEndpoint.Port(rawValue: port + 1) else {
+                log.error("Invalid alternate port number: \(self.port + 1)")
+                return
+            }
+            listener = try NWListener(using: params, on: altPort)
             listener?.newConnectionHandler = { [weak self] connection in
                 self?.handleConnection(connection)
             }
-            listener?.stateUpdateHandler = { state in
+            listener?.stateUpdateHandler = { [weak self] state in
                 if case .ready = state {
-                    log.info("Server listening on alternate port \(self.port + 1)")
+                    self?.actualPort = (self?.port ?? Discovery.port) + 1
+                    log.info("Server listening on alternate port \((self?.port ?? 0) + 1)")
                 }
             }
             listener?.start(queue: queue)
@@ -176,7 +188,11 @@ class SyncServer {
 
         let response = "HTTP/1.1 \(status) \(statusText)\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
 
-        let responseData = response.data(using: .utf8)!
+        guard let responseData = response.data(using: .utf8) else {
+            log.error("Failed to encode HTTP response")
+            connection.cancel()
+            return
+        }
         connection.send(content: responseData, completion: .contentProcessed { _ in
             connection.cancel()
         })

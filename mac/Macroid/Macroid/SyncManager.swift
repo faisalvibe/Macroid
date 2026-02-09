@@ -5,6 +5,7 @@ import os.log
 
 private let log = Logger(subsystem: "com.macroid", category: "SyncManager")
 private let maxHistory = 20
+private let historyKey = "com.macroid.clipboardHistory"
 
 struct DeviceInfo: Identifiable {
     let id = UUID()
@@ -25,9 +26,11 @@ class SyncManager: ObservableObject {
     private var syncClient: SyncClient?
     private var clipboardMonitor: ClipboardMonitor?
     private let syncQueue = DispatchQueue(label: "com.macroid.syncmanager")
+    private var keepaliveTimer: DispatchSourceTimer?
     @Published private(set) var isUpdatingFromRemote = false
 
     init() {
+        clipboardHistory = UserDefaults.standard.stringArray(forKey: historyKey) ?? []
         setupSync()
     }
 
@@ -53,6 +56,11 @@ class SyncManager: ObservableObject {
             }
         }
 
+        // Propagate actual server port to discovery announcements
+        if let actualPort = syncServer?.actualPort {
+            disc.announcePort = actualPort
+        }
+
         discovery?.startDiscovery { [weak self] device in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -74,6 +82,40 @@ class SyncManager: ObservableObject {
                 }
             }
         }
+
+        startKeepalive()
+    }
+
+    private func startKeepalive() {
+        let timer = DispatchSource.makeTimerSource(queue: syncQueue)
+        timer.schedule(deadline: .now() + 10, repeating: 10.0)
+        timer.setEventHandler { [weak self] in
+            guard let self = self, let device = self.connectedDevice else { return }
+            guard let url = URL(string: "http://\(device.address):\(device.port)/api/ping") else { return }
+
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 3
+
+            let config = URLSessionConfiguration.ephemeral
+            config.timeoutIntervalForRequest = 3
+            let session = URLSession(configuration: config)
+
+            session.dataTask(with: request) { [weak self] data, response, error in
+                guard let self = self else { return }
+                let isReachable = error == nil && data != nil &&
+                    String(data: data!, encoding: .utf8) == "pong"
+
+                DispatchQueue.main.async {
+                    if !isReachable && self.connectedDevice != nil {
+                        log.warning("Keepalive failed for \(device.alias), marking disconnected")
+                        self.connectedDevice = nil
+                    }
+                }
+                session.invalidateAndCancel()
+            }.resume()
+        }
+        timer.resume()
+        keepaliveTimer = timer
     }
 
     func onTextEdited(_ text: String) {
@@ -84,6 +126,7 @@ class SyncManager: ObservableObject {
 
     func clearHistory() {
         clipboardHistory.removeAll()
+        saveHistory()
     }
 
     func restoreFromHistory(_ text: String) {
@@ -99,9 +142,16 @@ class SyncManager: ObservableObject {
         if clipboardHistory.count > maxHistory {
             clipboardHistory = Array(clipboardHistory.prefix(maxHistory))
         }
+        saveHistory()
+    }
+
+    private func saveHistory() {
+        UserDefaults.standard.set(clipboardHistory, forKey: historyKey)
     }
 
     private func stopAll() {
+        keepaliveTimer?.cancel()
+        keepaliveTimer = nil
         clipboardMonitor?.stopMonitoring()
         discovery?.stopDiscovery()
         syncServer?.stop()

@@ -14,6 +14,7 @@ class Discovery {
     private var multicastGroup: NWConnectionGroup?
     private let queue = DispatchQueue(label: "com.macroid.discovery")
     let fingerprint = UUID().uuidString.prefix(8).lowercased()
+    var announcePort: UInt16 = Discovery.port
 
     private var announcement: [String: Any] {
         return [
@@ -22,7 +23,7 @@ class Discovery {
             "deviceModel": getMacModel(),
             "deviceType": "desktop",
             "fingerprint": String(fingerprint),
-            "port": Int(Discovery.port),
+            "port": Int(announcePort),
             "protocol": "http",
             "download": false,
             "announce": true
@@ -37,10 +38,15 @@ class Discovery {
 
     private func startMulticastListener(onDeviceFound: @escaping (DeviceInfo) -> Void) {
         do {
+            guard let nwPort = NWEndpoint.Port(rawValue: Discovery.port) else {
+                log.error("Invalid discovery port: \(Discovery.port)")
+                startFallbackDiscovery(onDeviceFound: onDeviceFound)
+                return
+            }
             let group = try NWMulticastGroup(for: [
                 .hostPort(
                     host: NWEndpoint.Host(Discovery.multicastGroup),
-                    port: NWEndpoint.Port(rawValue: Discovery.port)!
+                    port: nwPort
                 )
             ])
 
@@ -133,7 +139,9 @@ class Discovery {
             scanQueue.async {
                 defer { group.leave() }
 
-                let url = URL(string: "http://\(ip):\(Discovery.port)/api/ping")!
+                guard let url = URL(string: "http://\(ip):\(Discovery.port)/api/ping") else {
+                    return
+                }
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 0.5
 
