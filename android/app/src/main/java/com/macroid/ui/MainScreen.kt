@@ -42,6 +42,14 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import com.macroid.network.DeviceInfo
 
 @Composable
@@ -52,7 +60,8 @@ fun MainScreen(
     clipboardHistory: List<String>,
     onTextChanged: (String) -> Unit,
     onHistoryItemClicked: (String) -> Unit,
-    onClearHistory: () -> Unit
+    onClearHistory: () -> Unit,
+    onManualConnect: (String) -> Unit = {}
 ) {
     var showHistory by remember { mutableStateOf(false) }
 
@@ -121,7 +130,8 @@ fun MainScreen(
 
         StatusBar(
             connectedDevice = connectedDevice,
-            isSearching = isSearching
+            isSearching = isSearching,
+            onManualConnect = onManualConnect
         )
     }
 }
@@ -271,50 +281,119 @@ private fun HistoryItem(text: String, onClick: () -> Unit) {
 @Composable
 private fun StatusBar(
     connectedDevice: DeviceInfo?,
-    isSearching: Boolean
+    isSearching: Boolean,
+    onManualConnect: (String) -> Unit = {}
 ) {
-    Row(
+    var showManualConnect by remember { mutableStateOf(false) }
+    var manualIP by remember { mutableStateOf("") }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
+        AnimatedVisibility(visible = showManualConnect && connectedDevice == null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = manualIP,
+                    onValueChange = { manualIP = it },
+                    placeholder = {
+                        Text(
+                            "Enter IP address",
+                            style = TextStyle(fontSize = 13.sp)
+                        )
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp),
+                    textStyle = TextStyle(fontSize = 13.sp),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Go
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onGo = { onManualConnect(manualIP) }
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    )
+                )
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Button(
+                    onClick = { onManualConnect(manualIP) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.height(44.dp)
+                ) {
+                    Text("Connect", style = TextStyle(fontSize = 13.sp))
+                }
+            }
+        }
+
+        Row(
             modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(
-                    if (connectedDevice != null) Color(0xFF34C759) else Color(0xFFFF3B30)
-                )
-        )
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (connectedDevice != null) Color(0xFF34C759) else Color(0xFFFF3B30)
+                    )
+            )
 
-        Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(8.dp))
 
-        if (connectedDevice != null) {
-            Text(
-                text = "Connected to: ${connectedDevice.alias}",
-                style = TextStyle(
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            if (connectedDevice != null) {
+                Text(
+                    text = "Connected to: ${connectedDevice.alias}",
+                    style = TextStyle(
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 )
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = connectedDevice.address,
-                style = TextStyle(
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = connectedDevice.address,
+                    style = TextStyle(
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
                 )
-            )
-        } else {
-            Text(
-                text = if (isSearching) "Searching for devices..." else "Disconnected",
-                style = TextStyle(
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                Text(
+                    text = if (isSearching) "Searching for devices..." else "Disconnected",
+                    style = TextStyle(
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 )
-            )
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(onClick = { showManualConnect = !showManualConnect }) {
+                    Text(
+                        text = "Manual",
+                        style = TextStyle(
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                }
+            }
         }
     }
 }

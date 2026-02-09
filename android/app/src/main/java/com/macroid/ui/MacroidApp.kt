@@ -14,6 +14,11 @@ import com.macroid.network.DeviceInfo
 import com.macroid.network.Discovery
 import com.macroid.network.SyncClient
 import com.macroid.network.SyncServer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import java.net.HttpURLConnection
+import java.net.URL
 
 private const val TAG = "MacroidApp"
 private const val MAX_HISTORY = 20
@@ -91,6 +96,38 @@ fun MacroidApp() {
             },
             onClearHistory = {
                 clipboardHistory.clear()
+            },
+            onManualConnect = { ip ->
+                val trimmed = ip.trim()
+                if (trimmed.isNotEmpty()) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            val url = URL("http://$trimmed:${Discovery.PORT}/api/ping")
+                            val conn = url.openConnection() as HttpURLConnection
+                            conn.connectTimeout = 3000
+                            conn.readTimeout = 3000
+                            conn.requestMethod = "GET"
+                            val code = conn.responseCode
+                            conn.disconnect()
+
+                            val device = DeviceInfo(
+                                alias = trimmed,
+                                deviceType = "desktop",
+                                fingerprint = "manual",
+                                address = trimmed,
+                                port = Discovery.PORT
+                            )
+                            CoroutineScope(Dispatchers.Main).launch {
+                                connectedDevice = device
+                                isSearching = false
+                                syncClient.setPeer(device)
+                                Log.d(TAG, "Manually connected to $trimmed")
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Manual connect to $trimmed failed", e)
+                        }
+                    }
+                }
             }
         )
     }

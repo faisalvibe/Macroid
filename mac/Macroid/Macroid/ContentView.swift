@@ -4,6 +4,8 @@ struct ContentView: View {
     @ObservedObject var syncManager: SyncManager
     @Environment(\.colorScheme) var colorScheme
     @State private var showHistory = false
+    @State private var manualIP = ""
+    @State private var showManualConnect = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -144,35 +146,67 @@ struct ContentView: View {
     }
 
     private var statusBar: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(syncManager.connectedDevice != nil ? Color.green : Color.red)
-                .frame(width: 8, height: 8)
+        VStack(spacing: 0) {
+            if showManualConnect && syncManager.connectedDevice == nil {
+                HStack(spacing: 8) {
+                    TextField("Enter IP address", text: $manualIP)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .frame(maxWidth: .infinity)
+                        .onSubmit {
+                            syncManager.connectManually(ip: manualIP)
+                        }
 
-            if let device = syncManager.connectedDevice {
-                Text("Connected to: \(device.alias)")
+                    Button("Connect") {
+                        syncManager.connectManually(ip: manualIP)
+                    }
                     .font(.system(size: 12))
-                    .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
 
-                Spacer()
-
-                Text(device.address)
-                    .font(.system(size: 12))
-                    .foregroundColor(
-                        colorScheme == .dark
-                            ? Color(hex: "98989D").opacity(0.6)
-                            : Color(hex: "8E8E93").opacity(0.6)
-                    )
-            } else {
-                Text("Searching for devices...")
-                    .font(.system(size: 12))
-                    .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
-
-                Spacer()
+                Divider()
             }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(syncManager.connectedDevice != nil ? Color.green : Color.red)
+                    .frame(width: 8, height: 8)
+
+                if let device = syncManager.connectedDevice {
+                    Text("Connected to: \(device.alias)")
+                        .font(.system(size: 12))
+                        .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+
+                    Spacer()
+
+                    Text(device.address)
+                        .font(.system(size: 12))
+                        .foregroundColor(
+                            colorScheme == .dark
+                                ? Color(hex: "98989D").opacity(0.6)
+                                : Color(hex: "8E8E93").opacity(0.6)
+                        )
+                } else {
+                    Text("Searching for devices...")
+                        .font(.system(size: 12))
+                        .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+
+                    Spacer()
+
+                    Button(action: { showManualConnect.toggle() }) {
+                        Text("Manual")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "4A90D9"))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
         .background(colorScheme == .dark ? Color(hex: "2C2C2E") : Color(hex: "F2F2F7"))
     }
 }

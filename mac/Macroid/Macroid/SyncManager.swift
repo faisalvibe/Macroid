@@ -101,6 +101,40 @@ class SyncManager: ObservableObject {
         syncClient?.sendClipboard(text)
     }
 
+    func connectManually(ip: String) {
+        let trimmed = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let fp = String(discovery?.fingerprint ?? "manual")
+        let port = Int(Discovery.port)
+        let url = URL(string: "http://\(trimmed):\(port)/api/ping")!
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                log.error("Manual connect to \(trimmed) failed: \(error.localizedDescription)")
+                return
+            }
+
+            let device = DeviceInfo(
+                alias: trimmed,
+                deviceType: "mobile",
+                fingerprint: "manual",
+                address: trimmed,
+                port: port
+            )
+
+            DispatchQueue.main.async {
+                self.connectedDevice = device
+                self.syncClient = SyncClient(peer: device, fingerprint: fp)
+                log.info("Manually connected to \(trimmed)")
+            }
+        }.resume()
+    }
+
     private func addToHistory(_ text: String) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         clipboardHistory.removeAll { $0 == text }
