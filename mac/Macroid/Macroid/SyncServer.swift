@@ -24,16 +24,21 @@ class SyncServer {
         self.actualPort = Discovery.port
     }
 
+    var onReady: (() -> Void)?
+
     func start(onClipboardReceived: @escaping (String) -> Void, onImageReceived: @escaping (Data) -> Void = { _ in }) {
         self.onClipboardReceived = onClipboardReceived
         self.onImageReceived = onImageReceived
+        startOnPort(port)
+    }
 
+    private func startOnPort(_ targetPort: UInt16) {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
 
-            guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-                log.error("Invalid port number: \(self.port)")
+            guard let nwPort = NWEndpoint.Port(rawValue: targetPort) else {
+                log.error("Invalid port number: \(targetPort)")
                 return
             }
             listener = try NWListener(using: params, on: nwPort)
@@ -43,14 +48,28 @@ class SyncServer {
             }
 
             listener?.stateUpdateHandler = { [weak self] state in
+                guard let self = self else { return }
                 switch state {
                 case .ready:
-                    self?.actualPort = self?.port ?? Discovery.port
-                    AppLog.add("[SyncServer] Listening on port \(self?.port ?? 0)")
-                    log.info("Server listening on port \(self?.port ?? 0)")
+                    self.actualPort = targetPort
+                    AppLog.add("[SyncServer] Listening on port \(targetPort)")
+                    log.info("Server listening on port \(targetPort)")
+                    self.onReady?()
                 case .failed(let error):
-                    AppLog.add("[SyncServer] ERROR: Server failed: \(error.localizedDescription)")
-                    log.error("Server failed: \(error.localizedDescription)")
+                    AppLog.add("[SyncServer] ERROR on port \(targetPort): \(error.localizedDescription)")
+                    log.error("Server failed on port \(targetPort): \(error.localizedDescription)")
+                    self.listener?.cancel()
+                    self.listener = nil
+                    // Try alternate ports if the primary port failed
+                    if targetPort == self.port {
+                        AppLog.add("[SyncServer] Trying alternate port \(self.port + 1)...")
+                        self.startOnPort(self.port + 1)
+                    } else if targetPort == self.port + 1 {
+                        AppLog.add("[SyncServer] Trying alternate port \(self.port + 2)...")
+                        self.startOnPort(self.port + 2)
+                    } else {
+                        AppLog.add("[SyncServer] ERROR: All ports failed, server not running")
+                    }
                 default:
                     break
                 }
@@ -58,32 +77,8 @@ class SyncServer {
 
             listener?.start(queue: queue)
         } catch {
-            log.error("Failed to start on port \(self.port): \(error.localizedDescription)")
-            tryAlternatePort(onClipboardReceived: onClipboardReceived)
-        }
-    }
-
-    private func tryAlternatePort(onClipboardReceived: @escaping (String) -> Void) {
-        do {
-            let params = NWParameters.tcp
-            params.allowLocalEndpointReuse = true
-            guard let altPort = NWEndpoint.Port(rawValue: port + 1) else {
-                log.error("Invalid alternate port number: \(self.port + 1)")
-                return
-            }
-            listener = try NWListener(using: params, on: altPort)
-            listener?.newConnectionHandler = { [weak self] connection in
-                self?.handleConnection(connection)
-            }
-            listener?.stateUpdateHandler = { [weak self] state in
-                if case .ready = state {
-                    self?.actualPort = (self?.port ?? Discovery.port) + 1
-                    log.info("Server listening on alternate port \((self?.port ?? 0) + 1)")
-                }
-            }
-            listener?.start(queue: queue)
-        } catch {
-            log.error("Failed to start on alternate port: \(error.localizedDescription)")
+            AppLog.add("[SyncServer] ERROR creating listener on port \(targetPort): \(error.localizedDescription)")
+            log.error("Failed to create listener on port \(targetPort): \(error.localizedDescription)")
         }
     }
 

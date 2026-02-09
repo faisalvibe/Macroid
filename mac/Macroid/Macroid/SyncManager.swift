@@ -66,6 +66,13 @@ class SyncManager: ObservableObject {
             }
         }
 
+        server.onReady = { [weak self] in
+            guard let self = self, let disc = self.discovery, let server = self.syncServer else { return }
+            let actualPort = server.actualPort
+            disc.announcePort = actualPort
+            AppLog.add("[SyncManager] Server ready on port \(actualPort)")
+        }
+
         server.start(onClipboardReceived: { [weak self] text in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -83,12 +90,6 @@ class SyncManager: ObservableObject {
                 AppLog.add("[SyncManager] Received remote image (\(imageData.count) bytes)")
             }
         })
-
-        AppLog.add("[SyncManager] Server started on port \(server.actualPort)")
-
-        if let actualPort = server.actualPort as UInt16? {
-            disc.announcePort = actualPort
-        }
 
         discovery?.startDiscovery { [weak self] device in
             AppLog.add("[SyncManager] Discovery found device: \(device.alias) at \(device.address):\(device.port)")
