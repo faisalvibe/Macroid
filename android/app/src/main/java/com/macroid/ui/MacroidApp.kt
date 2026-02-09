@@ -21,6 +21,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.net.URL
 
 private const val TAG = "MacroidApp"
@@ -37,6 +39,7 @@ fun MacroidApp() {
         var connectedDevice by remember { mutableStateOf<DeviceInfo?>(null) }
         var isSearching by remember { mutableStateOf(true) }
         val clipboardHistory = remember { mutableStateListOf<String>() }
+        val localIP = remember { getLocalIPAddress() }
 
         // Load persisted history on first composition
         val prefs = remember { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
@@ -56,14 +59,17 @@ fun MacroidApp() {
         val clipboardMonitor = remember { ClipboardMonitor(context) }
 
         DisposableEffect(Unit) {
-            syncServer.start { incomingText ->
+            syncServer.start(onClipboardReceived = { incomingText ->
                 if (incomingText != clipboardText) {
                     clipboardText = incomingText
                     clipboardMonitor.writeToClipboard(incomingText)
                     addToHistory(clipboardHistory, incomingText, prefs)
                     Log.d(TAG, "Received remote clipboard update")
                 }
-            }
+            }, onImageReceived = { imageBytes ->
+                clipboardMonitor.writeImageToClipboard(imageBytes)
+                Log.d(TAG, "Received remote image clipboard update")
+            })
 
             discovery.startDiscovery { device ->
                 connectedDevice = device
@@ -71,14 +77,17 @@ fun MacroidApp() {
                 syncClient.setPeer(device)
             }
 
-            clipboardMonitor.startMonitoring { newText ->
+            clipboardMonitor.startMonitoring(onClipboardChanged = { newText ->
                 if (newText != clipboardText) {
                     clipboardText = newText
                     syncClient.sendClipboard(newText)
                     addToHistory(clipboardHistory, newText, prefs)
                     Log.d(TAG, "Detected local clipboard change, syncing")
                 }
-            }
+            }, onImageChanged = { imageBytes ->
+                syncClient.sendImage(imageBytes)
+                Log.d(TAG, "Detected local image clipboard change, syncing")
+            })
 
             val keepaliveJob = CoroutineScope(Dispatchers.IO).launch {
                 delay(10_000)
@@ -109,6 +118,7 @@ fun MacroidApp() {
             connectedDevice = connectedDevice,
             isSearching = isSearching,
             clipboardHistory = clipboardHistory,
+            localIP = localIP,
             onTextChanged = { newText ->
                 clipboardText = newText
                 clipboardMonitor.writeToClipboard(newText)
@@ -122,6 +132,32 @@ fun MacroidApp() {
             onClearHistory = {
                 clipboardHistory.clear()
                 prefs.edit().remove("${HISTORY_KEY}_ordered").apply()
+            },
+            onConnectByIP = { ip ->
+                CoroutineScope(Dispatchers.IO).launch {
+                    val reachable = pingDevice(DeviceInfo(
+                        alias = ip,
+                        deviceType = "desktop",
+                        fingerprint = "manual",
+                        address = ip,
+                        port = Discovery.PORT
+                    ))
+                    if (reachable) {
+                        val device = DeviceInfo(
+                            alias = ip,
+                            deviceType = "desktop",
+                            fingerprint = "manual",
+                            address = ip,
+                            port = Discovery.PORT
+                        )
+                        connectedDevice = device
+                        isSearching = false
+                        syncClient.setPeer(device)
+                        Log.d(TAG, "Manually connected to $ip")
+                    } else {
+                        Log.w(TAG, "Failed to connect to $ip")
+                    }
+                }
             }
         )
     }
@@ -139,6 +175,17 @@ private fun pingDevice(device: DeviceInfo): Boolean {
         response == "pong"
     } catch (e: Exception) {
         false
+    }
+}
+
+private fun getLocalIPAddress(): String {
+    return try {
+        NetworkInterface.getNetworkInterfaces()?.toList()
+            ?.flatMap { it.inetAddresses.toList() }
+            ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+            ?.hostAddress ?: "Unknown"
+    } catch (e: Exception) {
+        "Unknown"
     }
 }
 

@@ -20,6 +20,7 @@ class SyncManager: ObservableObject {
     @Published var clipboardText: String = ""
     @Published var connectedDevice: DeviceInfo?
     @Published var clipboardHistory: [String] = []
+    @Published var localIPAddress: String = ""
 
     private var discovery: Discovery?
     private var syncServer: SyncServer?
@@ -27,6 +28,7 @@ class SyncManager: ObservableObject {
     private var clipboardMonitor: ClipboardMonitor?
     private let syncQueue = DispatchQueue(label: "com.macroid.syncmanager")
     private var keepaliveTimer: DispatchSourceTimer?
+    private var fingerprint: String = ""
     @Published private(set) var isUpdatingFromRemote = false
 
     init() {
@@ -42,9 +44,11 @@ class SyncManager: ObservableObject {
         let disc = Discovery()
         self.discovery = disc
         let fp = String(disc.fingerprint)
+        self.fingerprint = fp
+        self.localIPAddress = disc.getLocalIPAddress() ?? "Unknown"
 
         syncServer = SyncServer(fingerprint: fp)
-        syncServer?.start { [weak self] text in
+        syncServer?.start(onClipboardReceived: { [weak self] text in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isUpdatingFromRemote = true
@@ -54,7 +58,13 @@ class SyncManager: ObservableObject {
                 self.isUpdatingFromRemote = false
                 log.debug("Applied remote clipboard update")
             }
-        }
+        }, onImageReceived: { [weak self] imageData in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.clipboardMonitor?.writeImageToClipboard(imageData)
+                log.debug("Applied remote image clipboard update")
+            }
+        })
 
         // Propagate actual server port to discovery announcements
         if let actualPort = syncServer?.actualPort {
@@ -71,7 +81,7 @@ class SyncManager: ObservableObject {
         }
 
         clipboardMonitor = ClipboardMonitor()
-        clipboardMonitor?.startMonitoring { [weak self] newText in
+        clipboardMonitor?.startMonitoring(onClipboardChanged: { [weak self] newText in
             DispatchQueue.main.async {
                 guard let self = self, !self.isUpdatingFromRemote else { return }
                 if newText != self.clipboardText {
@@ -81,7 +91,11 @@ class SyncManager: ObservableObject {
                     log.debug("Local clipboard change synced")
                 }
             }
-        }
+        }, onImageChanged: { [weak self] imageData in
+            guard let self = self else { return }
+            self.syncClient?.sendImage(imageData)
+            log.debug("Local image clipboard change synced")
+        })
 
         startKeepalive()
     }
@@ -116,6 +130,44 @@ class SyncManager: ObservableObject {
         }
         timer.resume()
         keepaliveTimer = timer
+    }
+
+    func connectByIP(_ ip: String, port: Int = Int(Discovery.port)) {
+        guard let url = URL(string: "http://\(ip):\(port)/api/ping") else {
+            log.error("Invalid IP address: \(ip)")
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 3
+        let session = URLSession(configuration: config)
+
+        session.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            let isReachable = error == nil && data != nil &&
+                String(data: data!, encoding: .utf8) == "pong"
+
+            DispatchQueue.main.async {
+                if isReachable {
+                    let device = DeviceInfo(
+                        alias: ip,
+                        deviceType: "mobile",
+                        fingerprint: "manual",
+                        address: ip,
+                        port: port
+                    )
+                    self.connectedDevice = device
+                    self.syncClient = SyncClient(peer: device, fingerprint: self.fingerprint)
+                    log.info("Manually connected to \(ip):\(port)")
+                } else {
+                    log.warning("Failed to connect to \(ip):\(port)")
+                }
+            }
+            session.invalidateAndCancel()
+        }.resume()
     }
 
     func onTextEdited(_ text: String) {

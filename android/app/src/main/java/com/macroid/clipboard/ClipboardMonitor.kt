@@ -3,6 +3,8 @@ package com.macroid.clipboard
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -10,6 +12,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
 
 class ClipboardMonitor(private val context: Context) {
 
@@ -23,14 +26,28 @@ class ClipboardMonitor(private val context: Context) {
     private var lastText: String = ""
     @Volatile
     private var lastRemoteText: String = ""
+    @Volatile
+    private var lastRemoteImageHash: Int = 0
 
-    fun startMonitoring(onClipboardChanged: (String) -> Unit) {
+    fun startMonitoring(onClipboardChanged: (String) -> Unit, onImageChanged: (ByteArray) -> Unit = {}) {
         lastText = getCurrentClipboard()
 
         pollJob = CoroutineScope(Dispatchers.Main).launch {
             while (isActive) {
                 delay(POLL_INTERVAL_MS)
                 try {
+                    // Check for image first
+                    val imageBytes = getCurrentImage()
+                    if (imageBytes != null) {
+                        val hash = imageBytes.contentHashCode()
+                        if (hash != lastRemoteImageHash) {
+                            Log.d(TAG, "Local clipboard image changed (${imageBytes.size} bytes)")
+                            onImageChanged(imageBytes)
+                            lastRemoteImageHash = hash
+                        }
+                        continue
+                    }
+
                     val current = getCurrentClipboard()
                     if (current != lastText) {
                         lastText = current
@@ -56,6 +73,22 @@ class ClipboardMonitor(private val context: Context) {
         Log.d(TAG, "Wrote remote text to clipboard (${text.length} chars)")
     }
 
+    fun writeImageToClipboard(imageBytes: ByteArray) {
+        lastRemoteImageHash = imageBytes.contentHashCode()
+        try {
+            val file = java.io.File(context.cacheDir, "macroid_clipboard.png")
+            file.writeBytes(imageBytes)
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                context, "${context.packageName}.fileprovider", file
+            )
+            val clip = ClipData.newUri(context.contentResolver, "Macroid Image", uri)
+            clipboardManager.setPrimaryClip(clip)
+            Log.d(TAG, "Wrote remote image to clipboard (${imageBytes.size} bytes)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to write image to clipboard", e)
+        }
+    }
+
     private fun getCurrentClipboard(): String {
         return try {
             if (clipboardManager.hasPrimaryClip()) {
@@ -64,6 +97,27 @@ class ClipboardMonitor(private val context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to read clipboard", e)
             ""
+        }
+    }
+
+    private fun getCurrentImage(): ByteArray? {
+        return try {
+            if (!clipboardManager.hasPrimaryClip()) return null
+            val clip = clipboardManager.primaryClip ?: return null
+            val item = clip.getItemAt(0) ?: return null
+            val uri = item.uri ?: return null
+
+            val mimeType = context.contentResolver.getType(uri) ?: return null
+            if (!mimeType.startsWith("image/")) return null
+
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                val bitmap = BitmapFactory.decodeStream(stream) ?: return null
+                val baos = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
+                baos.toByteArray()
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 

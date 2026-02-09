@@ -11,8 +11,10 @@ class SyncServer {
     private var lastClipboard = ""
     private var lastTimestamp: Int64 = 0
     private var onClipboardReceived: ((String) -> Void)?
+    private var onImageReceived: ((Data) -> Void)?
     private let deviceFingerprint: String
     private let maxBodySize = 1_048_576 // 1MB
+    private let maxImageSize = 10_485_760 // 10MB
     private(set) var actualPort: UInt16
 
     init(fingerprint: String) {
@@ -20,8 +22,9 @@ class SyncServer {
         self.actualPort = Discovery.port
     }
 
-    func start(onClipboardReceived: @escaping (String) -> Void) {
+    func start(onClipboardReceived: @escaping (String) -> Void, onImageReceived: @escaping (Data) -> Void = { _ in }) {
         self.onClipboardReceived = onClipboardReceived
+        self.onImageReceived = onImageReceived
 
         do {
             let params = NWParameters.tcp
@@ -128,6 +131,8 @@ class SyncServer {
             }
         } else if method == "POST" && path == "/api/clipboard" {
             handleClipboardPost(request: request, connection: connection)
+        } else if method == "POST" && path == "/api/clipboard/image" {
+            handleImagePost(request: request, connection: connection)
         } else if method == "POST" && path.hasPrefix("/api/localsend/v2/register") {
             sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
         } else {
@@ -173,6 +178,42 @@ class SyncServer {
             onClipboardReceived?(text)
         }
 
+        sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
+    }
+
+    private func handleImagePost(request: String, connection: NWConnection) {
+        let parts = request.components(separatedBy: "\r\n\r\n")
+        guard parts.count >= 2 else {
+            sendResponse(connection: connection, status: 400, body: "{\"error\":\"missing body\"}")
+            return
+        }
+
+        let bodyString = parts[1]
+        guard let bodyData = bodyString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
+            sendResponse(connection: connection, status: 400, body: "{\"error\":\"invalid json\"}")
+            return
+        }
+
+        let origin = json["origin"] as? String ?? ""
+        if origin == deviceFingerprint {
+            sendResponse(connection: connection, status: 200, body: "{\"status\":\"ignored\"}")
+            return
+        }
+
+        guard let base64String = json["image"] as? String,
+              let imageData = Data(base64Encoded: base64String) else {
+            sendResponse(connection: connection, status: 400, body: "{\"error\":\"invalid image data\"}")
+            return
+        }
+
+        if imageData.count > maxImageSize {
+            sendResponse(connection: connection, status: 413, body: "{\"error\":\"image too large\"}")
+            return
+        }
+
+        log.info("Received image (\(imageData.count) bytes) from origin=\(origin)")
+        onImageReceived?(imageData)
         sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
     }
 

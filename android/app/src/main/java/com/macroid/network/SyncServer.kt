@@ -26,6 +26,7 @@ class SyncServer(private val deviceFingerprint: String) {
     companion object {
         private const val TAG = "SyncServer"
         private const val MAX_BODY_SIZE = 1_048_576 // 1MB
+        private const val MAX_IMAGE_SIZE = 10_485_760 // 10MB
     }
 
     private var server: NettyApplicationEngine? = null
@@ -33,7 +34,7 @@ class SyncServer(private val deviceFingerprint: String) {
     private var lastClipboard = ""
     private var lastTimestamp = 0L
 
-    fun start(onClipboardReceived: (String) -> Unit) {
+    fun start(onClipboardReceived: (String) -> Unit, onImageReceived: (ByteArray) -> Unit = {}) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 server = embeddedServer(Netty, port = Discovery.PORT, host = "0.0.0.0") {
@@ -91,6 +92,36 @@ class SyncServer(private val deviceFingerprint: String) {
 
                         get("/api/ping") {
                             call.respondText("pong", ContentType.Text.Plain)
+                        }
+
+                        post("/api/clipboard/image") {
+                            try {
+                                val body = call.receiveText()
+                                val data = gson.fromJson(body, Map::class.java)
+                                val origin = data["origin"] as? String ?: ""
+
+                                if (origin == deviceFingerprint) {
+                                    call.respond(HttpStatusCode.OK, mapOf("status" to "ignored"))
+                                    return@post
+                                }
+
+                                val base64Image = data["image"] as? String ?: ""
+                                val imageBytes = android.util.Base64.decode(base64Image, android.util.Base64.DEFAULT)
+
+                                if (imageBytes.size > MAX_IMAGE_SIZE) {
+                                    call.respond(HttpStatusCode.PayloadTooLarge, mapOf("error" to "image too large"))
+                                    return@post
+                                }
+
+                                Log.d(TAG, "Received image (${imageBytes.size} bytes) from origin=$origin")
+                                CoroutineScope(Dispatchers.Main).launch {
+                                    onImageReceived(imageBytes)
+                                }
+                                call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error processing image POST", e)
+                                call.respond(HttpStatusCode.BadRequest, mapOf("error" to (e.message ?: "unknown")))
+                            }
                         }
 
                         post("/api/localsend/v2/register") {

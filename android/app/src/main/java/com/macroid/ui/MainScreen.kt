@@ -18,10 +18,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,9 +49,11 @@ fun MainScreen(
     connectedDevice: DeviceInfo?,
     isSearching: Boolean,
     clipboardHistory: List<String>,
+    localIP: String,
     onTextChanged: (String) -> Unit,
     onHistoryItemClicked: (String) -> Unit,
-    onClearHistory: () -> Unit
+    onClearHistory: () -> Unit,
+    onConnectByIP: (String) -> Unit
 ) {
     var showHistory by remember { mutableStateOf(false) }
 
@@ -117,7 +121,9 @@ fun MainScreen(
 
         StatusBar(
             connectedDevice = connectedDevice,
-            isSearching = isSearching
+            isSearching = isSearching,
+            localIP = localIP,
+            onConnectByIP = onConnectByIP
         )
     }
 }
@@ -267,8 +273,48 @@ private fun HistoryItem(text: String, onClick: () -> Unit) {
 @Composable
 private fun StatusBar(
     connectedDevice: DeviceInfo?,
-    isSearching: Boolean
+    isSearching: Boolean,
+    localIP: String,
+    onConnectByIP: (String) -> Unit
 ) {
+    var showConnectDialog by remember { mutableStateOf(false) }
+    var manualIP by remember { mutableStateOf("") }
+
+    if (showConnectDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showConnectDialog = false
+                manualIP = ""
+            },
+            title = { Text("Connect by IP") },
+            text = {
+                OutlinedTextField(
+                    value = manualIP,
+                    onValueChange = { manualIP = it },
+                    label = { Text("IP address") },
+                    placeholder = { Text("192.168.1.100") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val ip = manualIP.trim()
+                    if (ip.isNotEmpty()) {
+                        onConnectByIP(ip)
+                    }
+                    showConnectDialog = false
+                    manualIP = ""
+                }) { Text("Connect") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showConnectDialog = false
+                    manualIP = ""
+                }) { Text("Cancel") }
+            }
+        )
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -305,12 +351,22 @@ private fun StatusBar(
             )
         } else {
             Text(
-                text = if (isSearching) "Searching for devices..." else "Disconnected",
+                text = "My IP: $localIP",
                 style = TextStyle(
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             )
+            Spacer(modifier = Modifier.weight(1f))
+            TextButton(onClick = { showConnectDialog = true }) {
+                Text(
+                    text = "Connect by IP",
+                    style = TextStyle(
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                )
+            }
         }
     }
 }
