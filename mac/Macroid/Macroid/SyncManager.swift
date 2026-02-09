@@ -40,7 +40,23 @@ class SyncManager: ObservableObject {
         self.discovery = disc
         let fp = String(disc.fingerprint)
 
+        let onDeviceFound: (DeviceInfo) -> Void = { [weak self] device in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.connectedDevice = device
+                self.syncClient = SyncClient(peer: device, fingerprint: fp)
+                log.info("Connected to \(device.alias) at \(device.address)")
+            }
+        }
+
         syncServer = SyncServer(fingerprint: fp)
+        syncServer?.onPeerDiscovered = { [weak self] device in
+            guard let self = self else { return }
+            if self.connectedDevice == nil {
+                log.info("Reverse discovery: connected to \(device.alias)")
+                onDeviceFound(device)
+            }
+        }
         syncServer?.start { [weak self] text in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -53,14 +69,7 @@ class SyncManager: ObservableObject {
             }
         }
 
-        discovery?.startDiscovery { [weak self] device in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.connectedDevice = device
-                self.syncClient = SyncClient(peer: device, fingerprint: fp)
-                log.info("Connected to \(device.alias) at \(device.address)")
-            }
-        }
+        discovery?.startDiscovery(onDeviceFound: onDeviceFound)
 
         clipboardMonitor = ClipboardMonitor()
         clipboardMonitor?.startMonitoring { [weak self] newText in

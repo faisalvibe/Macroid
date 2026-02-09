@@ -34,6 +34,19 @@ fun MacroidApp() {
         val clipboardMonitor = remember { ClipboardMonitor(context) }
 
         DisposableEffect(Unit) {
+            val onDeviceFound = { device: DeviceInfo ->
+                connectedDevice = device
+                isSearching = false
+                syncClient.setPeer(device)
+            }
+
+            syncServer.onPeerDiscovered = { device ->
+                if (connectedDevice == null) {
+                    Log.d(TAG, "Reverse discovery: connected to ${device.alias}")
+                    onDeviceFound(device)
+                }
+            }
+
             syncServer.start { incomingText ->
                 if (incomingText != clipboardText) {
                     clipboardText = incomingText
@@ -43,11 +56,7 @@ fun MacroidApp() {
                 }
             }
 
-            discovery.startDiscovery { device ->
-                connectedDevice = device
-                isSearching = false
-                syncClient.setPeer(device)
-            }
+            discovery.startDiscovery(onDeviceFound)
 
             clipboardMonitor.startMonitoring { newText ->
                 if (newText != clipboardText) {

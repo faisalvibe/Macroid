@@ -13,6 +13,7 @@ class SyncServer {
     private var onClipboardReceived: ((String) -> Void)?
     private let deviceFingerprint: String
     private let maxBodySize = 1_048_576 // 1MB
+    var onPeerDiscovered: ((DeviceInfo) -> Void)?
 
     init(fingerprint: String) {
         self.deviceFingerprint = fingerprint
@@ -71,6 +72,12 @@ class SyncServer {
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
 
+        // Extract remote IP
+        var remoteAddress = "unknown"
+        if case .hostPort(let host, _) = connection.currentPath?.remoteEndpoint {
+            remoteAddress = "\(host)"
+        }
+
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self, let data = data else {
                 connection.cancel()
@@ -84,11 +91,11 @@ class SyncServer {
             }
 
             let request = String(data: data, encoding: .utf8) ?? ""
-            self.routeRequest(request, connection: connection)
+            self.routeRequest(request, connection: connection, remoteAddress: remoteAddress)
         }
     }
 
-    private func routeRequest(_ request: String, connection: NWConnection) {
+    private func routeRequest(_ request: String, connection: NWConnection, remoteAddress: String = "unknown") {
         let lines = request.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else {
             sendResponse(connection: connection, status: 400, body: "{\"error\":\"bad request\"}")
@@ -115,7 +122,7 @@ class SyncServer {
                 sendResponse(connection: connection, status: 200, body: "{\"text\":\"\",\"timestamp\":0}")
             }
         } else if method == "POST" && path == "/api/clipboard" {
-            handleClipboardPost(request: request, connection: connection)
+            handleClipboardPost(request: request, connection: connection, remoteAddress: remoteAddress)
         } else if method == "POST" && path.hasPrefix("/api/localsend/v2/register") {
             sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
         } else {
@@ -123,7 +130,7 @@ class SyncServer {
         }
     }
 
-    private func handleClipboardPost(request: String, connection: NWConnection) {
+    private func handleClipboardPost(request: String, connection: NWConnection, remoteAddress: String = "unknown") {
         let parts = request.components(separatedBy: "\r\n\r\n")
         guard parts.count >= 2 else {
             sendResponse(connection: connection, status: 400, body: "{\"error\":\"missing body\"}")
@@ -152,6 +159,19 @@ class SyncServer {
             log.debug("Ignoring echo from self")
             sendResponse(connection: connection, status: 200, body: "{\"status\":\"ignored\"}")
             return
+        }
+
+        // Reverse discovery: register the sender as a peer
+        if remoteAddress != "unknown" {
+            let device = DeviceInfo(
+                alias: remoteAddress,
+                deviceType: "mobile",
+                fingerprint: origin,
+                address: remoteAddress,
+                port: Int(Discovery.port)
+            )
+            log.info("Reverse discovery: found peer at \(remoteAddress)")
+            onPeerDiscovered?(device)
         }
 
         if !text.isEmpty && timestamp > lastTimestamp {

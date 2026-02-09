@@ -32,6 +32,7 @@ class SyncServer(private val deviceFingerprint: String) {
     private val gson = Gson()
     private var lastClipboard = ""
     private var lastTimestamp = 0L
+    var onPeerDiscovered: ((DeviceInfo) -> Unit)? = null
 
     fun start(onClipboardReceived: (String) -> Unit) {
         CoroutineScope(Dispatchers.IO).launch {
@@ -43,6 +44,7 @@ class SyncServer(private val deviceFingerprint: String) {
                     routing {
                         post("/api/clipboard") {
                             try {
+                                val remoteHost = call.request.local.remoteHost
                                 val body = call.receiveText()
                                 if (body.length > MAX_BODY_SIZE) {
                                     Log.w(TAG, "Rejected oversized request: ${body.length} bytes")
@@ -59,6 +61,19 @@ class SyncServer(private val deviceFingerprint: String) {
                                     Log.d(TAG, "Ignoring echo from self")
                                     call.respond(HttpStatusCode.OK, mapOf("status" to "ignored"))
                                     return@post
+                                }
+
+                                // Reverse discovery: register the sender as a peer
+                                if (remoteHost.isNotEmpty()) {
+                                    val device = DeviceInfo(
+                                        alias = remoteHost,
+                                        deviceType = "desktop",
+                                        fingerprint = origin,
+                                        address = remoteHost,
+                                        port = Discovery.PORT
+                                    )
+                                    Log.d(TAG, "Reverse discovery: found peer at $remoteHost")
+                                    onPeerDiscovered?.invoke(device)
                                 }
 
                                 if (text.isNotEmpty() && timestamp > lastTimestamp) {
