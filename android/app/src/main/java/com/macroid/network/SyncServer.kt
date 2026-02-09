@@ -1,5 +1,6 @@
 package com.macroid.network
 
+import android.util.Log
 import com.google.gson.Gson
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -20,7 +21,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-class SyncServer {
+class SyncServer(private val deviceFingerprint: String) {
+
+    companion object {
+        private const val TAG = "SyncServer"
+        private const val MAX_BODY_SIZE = 1_048_576 // 1MB
+    }
 
     private var server: NettyApplicationEngine? = null
     private val gson = Gson()
@@ -38,19 +44,34 @@ class SyncServer {
                         post("/api/clipboard") {
                             try {
                                 val body = call.receiveText()
+                                if (body.length > MAX_BODY_SIZE) {
+                                    Log.w(TAG, "Rejected oversized request: ${body.length} bytes")
+                                    call.respond(HttpStatusCode.PayloadTooLarge, mapOf("error" to "payload too large"))
+                                    return@post
+                                }
+
                                 val data = gson.fromJson(body, Map::class.java)
                                 val text = data["text"] as? String ?: ""
                                 val timestamp = (data["timestamp"] as? Double)?.toLong() ?: 0L
+                                val origin = data["origin"] as? String ?: ""
+
+                                if (origin == deviceFingerprint) {
+                                    Log.d(TAG, "Ignoring echo from self")
+                                    call.respond(HttpStatusCode.OK, mapOf("status" to "ignored"))
+                                    return@post
+                                }
 
                                 if (text.isNotEmpty() && timestamp > lastTimestamp) {
                                     lastTimestamp = timestamp
                                     lastClipboard = text
+                                    Log.d(TAG, "Received clipboard (${text.length} chars) from origin=$origin")
                                     CoroutineScope(Dispatchers.Main).launch {
                                         onClipboardReceived(text)
                                     }
                                 }
                                 call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))
                             } catch (e: Exception) {
+                                Log.e(TAG, "Error processing clipboard POST", e)
                                 call.respond(
                                     HttpStatusCode.BadRequest,
                                     mapOf("error" to (e.message ?: "unknown"))
@@ -78,8 +99,9 @@ class SyncServer {
                     }
                 }
                 server?.start(wait = false)
-            } catch (_: Exception) {
-                // Port might be in use
+                Log.d(TAG, "Server started on port ${Discovery.PORT}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start server on port ${Discovery.PORT}", e)
             }
         }
     }
@@ -87,5 +109,6 @@ class SyncServer {
     fun stop() {
         server?.stop(1000, 2000)
         server = null
+        Log.d(TAG, "Server stopped")
     }
 }

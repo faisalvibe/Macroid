@@ -3,12 +3,17 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var syncManager: SyncManager
     @Environment(\.colorScheme) var colorScheme
+    @State private var showHistory = false
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
             Divider()
-            editorArea
+            if showHistory {
+                historyPanel
+            } else {
+                editorArea
+            }
             Divider()
             statusBar
         }
@@ -23,9 +28,17 @@ struct ContentView: View {
 
             Spacer()
 
+            Button(action: { showHistory.toggle() }) {
+                Text(showHistory ? "Editor" : "History")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: "4A90D9"))
+            }
+            .buttonStyle(.plain)
+
             Circle()
                 .fill(syncManager.connectedDevice != nil ? Color.green : Color.red)
                 .frame(width: 10, height: 10)
+                .padding(.leading, 8)
         }
         .padding(.horizontal, 16)
         .frame(height: 44)
@@ -58,6 +71,76 @@ struct ContentView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var historyPanel: some View {
+        VStack(spacing: 0) {
+            if syncManager.clipboardHistory.isEmpty {
+                Spacer()
+                Text("No clipboard history yet")
+                    .font(.system(size: 14))
+                    .foregroundColor(
+                        colorScheme == .dark
+                            ? Color(hex: "98989D").opacity(0.5)
+                            : Color(hex: "8E8E93").opacity(0.5)
+                    )
+                Spacer()
+            } else {
+                HStack {
+                    Text("\(syncManager.clipboardHistory.count) items")
+                        .font(.system(size: 12))
+                        .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+
+                    Spacer()
+
+                    Button("Clear") {
+                        syncManager.clearHistory()
+                    }
+                    .font(.system(size: 12))
+                    .foregroundColor(.red)
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(syncManager.clipboardHistory.enumerated()), id: \.offset) { _, item in
+                            historyRow(item)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func historyRow(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(text)
+                .font(.system(size: 13))
+                .lineLimit(3)
+                .foregroundColor(colorScheme == .dark ? Color(hex: "F2F2F7") : Color(hex: "1C1C1E"))
+
+            Text("\(text.count) characters")
+                .font(.system(size: 11))
+                .foregroundColor(
+                    colorScheme == .dark
+                        ? Color(hex: "98989D").opacity(0.5)
+                        : Color(hex: "8E8E93").opacity(0.5)
+                )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            syncManager.restoreFromHistory(text)
+            showHistory = false
+        }
+        .overlay(alignment: .bottom) {
+            Divider().padding(.horizontal, 16)
+        }
     }
 
     private var statusBar: some View {
