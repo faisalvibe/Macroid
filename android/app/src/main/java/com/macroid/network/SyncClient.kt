@@ -41,6 +41,31 @@ class SyncClient(private val deviceFingerprint: String) {
         Log.d(TAG, "Peer set: ${device.alias} at ${device.address}:${device.port}")
     }
 
+    fun sendImage(imageBytes: ByteArray) {
+        val device = peer ?: return
+
+        CoroutineScope(Dispatchers.IO).launch {
+            val base64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
+            val payload = gson.toJson(
+                mapOf(
+                    "image" to base64,
+                    "timestamp" to System.currentTimeMillis(),
+                    "origin" to deviceFingerprint
+                )
+            )
+
+            try {
+                client.post("http://${device.address}:${device.port}/api/clipboard/image") {
+                    contentType(ContentType.Application.Json)
+                    setBody(payload)
+                }
+                Log.d(TAG, "Sent image (${imageBytes.size} bytes) to ${device.alias}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Image send failed", e)
+            }
+        }
+    }
+
     fun sendClipboard(text: String) {
         val device = peer ?: return
         lastSentText = text

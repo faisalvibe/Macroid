@@ -4,6 +4,8 @@ struct ContentView: View {
     @ObservedObject var syncManager: SyncManager
     @Environment(\.colorScheme) var colorScheme
     @State private var showHistory = false
+    @State private var showConnectSheet = false
+    @State private var manualIP = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,6 +20,58 @@ struct ContentView: View {
             statusBar
         }
         .background(colorScheme == .dark ? Color(hex: "1C1C1E") : Color(hex: "FAFAFA"))
+        .sheet(isPresented: $showConnectSheet) {
+            connectByIPSheet
+        }
+    }
+
+    private var connectByIPSheet: some View {
+        VStack(spacing: 16) {
+            Text("Connect by IP")
+                .font(.system(size: 16, weight: .medium))
+
+            Text("My IP: \(syncManager.localIPAddress)")
+                .font(.system(size: 13))
+                .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+
+            TextField("Enter device IP address (e.g. 192.168.1.100)", text: $manualIP)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 300)
+
+            if !syncManager.connectionStatus.isEmpty {
+                HStack(spacing: 6) {
+                    if syncManager.connectionStatus == "Connecting..." {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                    }
+                    Text(syncManager.connectionStatus)
+                        .font(.system(size: 12))
+                        .foregroundColor(
+                            syncManager.connectionStatus.hasPrefix("Connected") ? .green :
+                            syncManager.connectionStatus.hasPrefix("Failed") ? .red :
+                            (colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+                        )
+                }
+            }
+
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    showConnectSheet = false
+                    manualIP = ""
+                    syncManager.connectionStatus = ""
+                }
+                Button("Connect") {
+                    let ip = manualIP.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !ip.isEmpty {
+                        syncManager.connectByIP(ip)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(syncManager.connectionStatus == "Connecting...")
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 380)
     }
 
     private var topBar: some View {
@@ -169,6 +223,13 @@ struct ContentView: View {
                     .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
 
                 Spacer()
+
+                Button(action: { showConnectSheet = true }) {
+                    Text("Connect by IP")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(hex: "4A90D9"))
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 16)

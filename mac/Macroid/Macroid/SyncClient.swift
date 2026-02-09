@@ -19,7 +19,10 @@ class SyncClient {
     }
 
     func sendClipboard(_ text: String) {
-        let url = URL(string: "http://\(peer.address):\(peer.port)/api/clipboard")!
+        guard let url = URL(string: "http://\(peer.address):\(peer.port)/api/clipboard") else {
+            log.error("Invalid peer URL: \(self.peer.address):\(self.peer.port)")
+            return
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -34,6 +37,34 @@ class SyncClient {
         request.httpBody = body
 
         sendWithRetry(request: request, text: text, attempt: 1)
+    }
+
+    func sendImage(_ imageData: Data) {
+        guard let url = URL(string: "http://\(peer.address):\(peer.port)/api/clipboard/image") else {
+            log.error("Invalid peer URL for image: \(self.peer.address):\(self.peer.port)")
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let payload: [String: Any] = [
+            "image": imageData.base64EncodedString(),
+            "timestamp": Int64(Date().timeIntervalSince1970 * 1000),
+            "origin": deviceFingerprint
+        ]
+
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        request.httpBody = body
+
+        session.dataTask(with: request) { [weak self] _, response, error in
+            guard let self = self else { return }
+            if let error = error {
+                log.error("Image send failed: \(error.localizedDescription)")
+            } else {
+                log.debug("Sent image (\(imageData.count) bytes) to \(self.peer.alias)")
+            }
+        }.resume()
     }
 
     private func sendWithRetry(request: URLRequest, text: String, attempt: Int) {

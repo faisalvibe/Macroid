@@ -40,16 +40,24 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macroid-release
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
 
   release:
     needs: build
     runs-on: ubuntu-latest
-    continue-on-error: true
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Extract version from build.gradle.kts
+        id: version
+        working-directory: android
+        run: |
+          VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
 
       - name: Download Debug APK
         uses: actions/download-artifact@v4
@@ -65,9 +73,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v1.1.0"
+          TAG="v${{ steps.version.outputs.version }}"
           mv app-debug.apk Macroid-debug.apk
-          mv app-release-unsigned.apk Macroid-release.apk
-          gh release delete "$TAG" --yes 2>/dev/null || true
-          sleep 2
-          gh release create "$TAG" --title "Macroid $TAG" --generate-notes Macroid-debug.apk Macroid-release.apk
+          mv app-release.apk Macroid-release.apk
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Release $TAG already exists, skipping"
+          else
+            gh release create "$TAG" --title "Macroid $TAG" --generate-notes Macroid-debug.apk Macroid-release.apk
+          fi

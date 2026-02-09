@@ -9,11 +9,12 @@ class ClipboardMonitor {
     private var lastChangeCount: Int = 0
     private var lastText: String = ""
     private var lastRemoteText: String = ""
+    private var lastRemoteImageHash: Int = 0
     private let pasteboard = NSPasteboard.general
     private let queue = DispatchQueue(label: "com.macroid.clipboard")
     private let lock = NSLock()
 
-    func startMonitoring(onClipboardChanged: @escaping (String) -> Void) {
+    func startMonitoring(onClipboardChanged: @escaping (String) -> Void, onImageChanged: @escaping (Data) -> Void) {
         lastChangeCount = pasteboard.changeCount
         lastText = getCurrentClipboard()
 
@@ -25,6 +26,22 @@ class ClipboardMonitor {
             let currentCount = self.pasteboard.changeCount
             if currentCount != self.lastChangeCount {
                 self.lastChangeCount = currentCount
+
+                // Check for image first
+                if let imageData = self.getCurrentImage() {
+                    let hash = imageData.hashValue
+                    self.lock.lock()
+                    let isEcho = (hash == self.lastRemoteImageHash)
+                    self.lock.unlock()
+
+                    if isEcho {
+                        log.debug("Skipping echo of remote image")
+                    } else {
+                        log.debug("Local clipboard image changed (\(imageData.count) bytes)")
+                        onImageChanged(imageData)
+                    }
+                    return
+                }
 
                 let text = self.getCurrentClipboard()
                 if text != self.lastText {
@@ -59,8 +76,32 @@ class ClipboardMonitor {
         log.debug("Wrote remote text to clipboard (\(text.count) chars)")
     }
 
+    func writeImageToClipboard(_ imageData: Data) {
+        lock.lock()
+        lastRemoteImageHash = imageData.hashValue
+        lock.unlock()
+        pasteboard.clearContents()
+        if let image = NSImage(data: imageData) {
+            pasteboard.writeObjects([image])
+        }
+        lastChangeCount = pasteboard.changeCount
+        log.debug("Wrote remote image to clipboard (\(imageData.count) bytes)")
+    }
+
     private func getCurrentClipboard() -> String {
         return pasteboard.string(forType: .string) ?? ""
+    }
+
+    private func getCurrentImage() -> Data? {
+        if pasteboard.types?.contains(.png) == true {
+            return pasteboard.data(forType: .png)
+        }
+        if pasteboard.types?.contains(.tiff) == true,
+           let tiffData = pasteboard.data(forType: .tiff),
+           let bitmapRep = NSBitmapImageRep(data: tiffData) {
+            return bitmapRep.representation(using: .png, properties: [:])
+        }
+        return nil
     }
 
     func stopMonitoring() {

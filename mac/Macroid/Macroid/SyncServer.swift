@@ -11,30 +11,42 @@ class SyncServer {
     private var lastClipboard = ""
     private var lastTimestamp: Int64 = 0
     private var onClipboardReceived: ((String) -> Void)?
+    private var onImageReceived: ((Data) -> Void)?
     private let deviceFingerprint: String
     private let maxBodySize = 1_048_576 // 1MB
+    private let maxImageSize = 10_485_760 // 10MB
+    private(set) var actualPort: UInt16
+    var deviceInfoProvider: (() -> [String: Any])?
+    var onDeviceRegistered: ((DeviceInfo) -> Void)?
 
     init(fingerprint: String) {
         self.deviceFingerprint = fingerprint
+        self.actualPort = Discovery.port
     }
 
-    func start(onClipboardReceived: @escaping (String) -> Void) {
+    func start(onClipboardReceived: @escaping (String) -> Void, onImageReceived: @escaping (Data) -> Void = { _ in }) {
         self.onClipboardReceived = onClipboardReceived
+        self.onImageReceived = onImageReceived
 
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
 
-            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+            guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+                log.error("Invalid port number: \(self.port)")
+                return
+            }
+            listener = try NWListener(using: params, on: nwPort)
 
             listener?.newConnectionHandler = { [weak self] connection in
                 self?.handleConnection(connection)
             }
 
-            listener?.stateUpdateHandler = { state in
+            listener?.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready:
-                    log.info("Server listening on port \(self.port)")
+                    self?.actualPort = self?.port ?? Discovery.port
+                    log.info("Server listening on port \(self?.port ?? 0)")
                 case .failed(let error):
                     log.error("Server failed: \(error.localizedDescription)")
                 default:
@@ -53,13 +65,18 @@ class SyncServer {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port + 1)!)
+            guard let altPort = NWEndpoint.Port(rawValue: port + 1) else {
+                log.error("Invalid alternate port number: \(self.port + 1)")
+                return
+            }
+            listener = try NWListener(using: params, on: altPort)
             listener?.newConnectionHandler = { [weak self] connection in
                 self?.handleConnection(connection)
             }
-            listener?.stateUpdateHandler = { state in
+            listener?.stateUpdateHandler = { [weak self] state in
                 if case .ready = state {
-                    log.info("Server listening on alternate port \(self.port + 1)")
+                    self?.actualPort = (self?.port ?? Discovery.port) + 1
+                    log.info("Server listening on alternate port \((self?.port ?? 0) + 1)")
                 }
             }
             listener?.start(queue: queue)
@@ -116,10 +133,76 @@ class SyncServer {
             }
         } else if method == "POST" && path == "/api/clipboard" {
             handleClipboardPost(request: request, connection: connection)
+        } else if method == "POST" && path == "/api/clipboard/image" {
+            handleImagePost(request: request, connection: connection)
+        } else if method == "GET" && path == "/api/localsend/v2/info" {
+            handleInfoGet(connection: connection)
         } else if method == "POST" && path.hasPrefix("/api/localsend/v2/register") {
-            sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
+            handleRegisterPost(request: request, connection: connection)
         } else {
             sendResponse(connection: connection, status: 404, body: "{\"error\":\"not found\"}")
+        }
+    }
+
+    private func handleInfoGet(connection: NWConnection) {
+        let info = deviceInfoProvider?() ?? [
+            "alias": Host.current().localizedName ?? "Mac",
+            "version": "2.1",
+            "deviceType": "desktop",
+            "fingerprint": deviceFingerprint,
+            "download": false
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: info),
+           let body = String(data: data, encoding: .utf8) {
+            sendResponse(connection: connection, status: 200, body: body)
+        } else {
+            sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
+        }
+    }
+
+    private func handleRegisterPost(request: String, connection: NWConnection) {
+        let parts = request.components(separatedBy: "\r\n\r\n")
+        var responseInfo = deviceInfoProvider?() ?? [
+            "alias": Host.current().localizedName ?? "Mac",
+            "version": "2.1",
+            "deviceType": "desktop",
+            "fingerprint": deviceFingerprint
+        ]
+
+        if parts.count >= 2 {
+            let bodyString = parts[1]
+            if let bodyData = bodyString.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
+                let fp = json["fingerprint"] as? String ?? ""
+                let alias = json["alias"] as? String ?? "Unknown"
+                let deviceType = json["deviceType"] as? String ?? "unknown"
+                let port = json["port"] as? Int ?? Int(Discovery.port)
+
+                if !fp.isEmpty && fp != deviceFingerprint && deviceType == "mobile" {
+                    // Extract remote IP from connection
+                    var remoteAddress = "unknown"
+                    if case .hostPort(let host, _) = connection.currentPath?.remoteEndpoint {
+                        remoteAddress = "\(host)"
+                    }
+
+                    let device = DeviceInfo(
+                        alias: alias,
+                        deviceType: deviceType,
+                        fingerprint: fp,
+                        address: remoteAddress,
+                        port: port
+                    )
+                    log.info("Device registered via HTTP: \(device.alias) at \(device.address)")
+                    onDeviceRegistered?(device)
+                }
+            }
+        }
+
+        if let data = try? JSONSerialization.data(withJSONObject: responseInfo),
+           let body = String(data: data, encoding: .utf8) {
+            sendResponse(connection: connection, status: 200, body: body)
+        } else {
+            sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
         }
     }
 
@@ -164,6 +247,42 @@ class SyncServer {
         sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
     }
 
+    private func handleImagePost(request: String, connection: NWConnection) {
+        let parts = request.components(separatedBy: "\r\n\r\n")
+        guard parts.count >= 2 else {
+            sendResponse(connection: connection, status: 400, body: "{\"error\":\"missing body\"}")
+            return
+        }
+
+        let bodyString = parts[1]
+        guard let bodyData = bodyString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
+            sendResponse(connection: connection, status: 400, body: "{\"error\":\"invalid json\"}")
+            return
+        }
+
+        let origin = json["origin"] as? String ?? ""
+        if origin == deviceFingerprint {
+            sendResponse(connection: connection, status: 200, body: "{\"status\":\"ignored\"}")
+            return
+        }
+
+        guard let base64String = json["image"] as? String,
+              let imageData = Data(base64Encoded: base64String) else {
+            sendResponse(connection: connection, status: 400, body: "{\"error\":\"invalid image data\"}")
+            return
+        }
+
+        if imageData.count > maxImageSize {
+            sendResponse(connection: connection, status: 413, body: "{\"error\":\"image too large\"}")
+            return
+        }
+
+        log.info("Received image (\(imageData.count) bytes) from origin=\(origin)")
+        onImageReceived?(imageData)
+        sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
+    }
+
     private func sendResponse(connection: NWConnection, status: Int, body: String, contentType: String = "application/json") {
         let statusText: String
         switch status {
@@ -176,7 +295,11 @@ class SyncServer {
 
         let response = "HTTP/1.1 \(status) \(statusText)\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
 
-        let responseData = response.data(using: .utf8)!
+        guard let responseData = response.data(using: .utf8) else {
+            log.error("Failed to encode HTTP response")
+            connection.cancel()
+            return
+        }
         connection.send(content: responseData, completion: .contentProcessed { _ in
             connection.cancel()
         })

@@ -1,5 +1,6 @@
 package com.macroid.ui
 
+import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -14,9 +15,18 @@ import com.macroid.network.DeviceInfo
 import com.macroid.network.Discovery
 import com.macroid.network.SyncClient
 import com.macroid.network.SyncServer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.net.HttpURLConnection
+import java.net.URL
 
 private const val TAG = "MacroidApp"
 private const val MAX_HISTORY = 20
+private const val PREFS_NAME = "macroid_prefs"
+private const val HISTORY_KEY = "clipboard_history"
 
 @Composable
 fun MacroidApp() {
@@ -26,39 +36,91 @@ fun MacroidApp() {
         var clipboardText by remember { mutableStateOf("") }
         var connectedDevice by remember { mutableStateOf<DeviceInfo?>(null) }
         var isSearching by remember { mutableStateOf(true) }
+        var connectionStatus by remember { mutableStateOf("") }
         val clipboardHistory = remember { mutableStateListOf<String>() }
 
         val discovery = remember { Discovery(context) }
-        val syncServer = remember { SyncServer(discovery.fingerprint) }
+        val localIP = remember { discovery.getLocalIPAddress() ?: "Unknown" }
+
+        // Load persisted history on first composition
+        val prefs = remember { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
+        remember {
+            val ordered = prefs.getString("${HISTORY_KEY}_ordered", null)
+            if (ordered != null && ordered.isNotEmpty()) {
+                ordered.split("\u0000").filter { it.isNotEmpty() }.take(MAX_HISTORY).forEach {
+                    clipboardHistory.add(it)
+                }
+            }
+            true
+        }
+
+        val syncServer = remember { SyncServer(discovery.fingerprint, deviceInfoProvider = { discovery.getDeviceInfo() }) }
         val syncClient = remember { SyncClient(discovery.fingerprint) }
         val clipboardMonitor = remember { ClipboardMonitor(context) }
 
         DisposableEffect(Unit) {
-            syncServer.start { incomingText ->
-                if (incomingText != clipboardText) {
-                    clipboardText = incomingText
-                    clipboardMonitor.writeToClipboard(incomingText)
-                    addToHistory(clipboardHistory, incomingText)
-                    Log.d(TAG, "Received remote clipboard update")
-                }
-            }
-
-            discovery.startDiscovery { device ->
+            val onDeviceFound = { device: DeviceInfo ->
                 connectedDevice = device
                 isSearching = false
                 syncClient.setPeer(device)
             }
 
-            clipboardMonitor.startMonitoring { newText ->
+            // Wire up SyncServer to also trigger discovery via register endpoint
+            syncServer.onDeviceRegistered = { device ->
+                if (device.deviceType != "mobile") {
+                    CoroutineScope(Dispatchers.Main).launch {
+                        onDeviceFound(device)
+                        Log.d(TAG, "Device registered via HTTP: ${device.alias}")
+                    }
+                }
+            }
+
+            syncServer.start(onClipboardReceived = { incomingText ->
+                if (incomingText != clipboardText) {
+                    clipboardText = incomingText
+                    clipboardMonitor.writeToClipboard(incomingText)
+                    addToHistory(clipboardHistory, incomingText, prefs)
+                    Log.d(TAG, "Received remote clipboard update")
+                }
+            }, onImageReceived = { imageBytes ->
+                clipboardMonitor.writeImageToClipboard(imageBytes)
+                Log.d(TAG, "Received remote image clipboard update")
+            })
+
+            discovery.startDiscovery { device ->
+                onDeviceFound(device)
+            }
+
+            clipboardMonitor.startMonitoring(onClipboardChanged = { newText ->
                 if (newText != clipboardText) {
                     clipboardText = newText
                     syncClient.sendClipboard(newText)
-                    addToHistory(clipboardHistory, newText)
+                    addToHistory(clipboardHistory, newText, prefs)
                     Log.d(TAG, "Detected local clipboard change, syncing")
+                }
+            }, onImageChanged = { imageBytes ->
+                syncClient.sendImage(imageBytes)
+                Log.d(TAG, "Detected local image clipboard change, syncing")
+            })
+
+            val keepaliveJob = CoroutineScope(Dispatchers.IO).launch {
+                delay(10_000)
+                while (isActive) {
+                    val device = connectedDevice
+                    if (device != null) {
+                        val reachable = pingDevice(device)
+                        if (!reachable) {
+                            Log.w(TAG, "Keepalive failed for ${device.alias}, marking disconnected")
+                            connectedDevice = null
+                            isSearching = true
+                        }
+                    }
+                    delay(10_000)
                 }
             }
 
             onDispose {
+                keepaliveJob.cancel()
                 clipboardMonitor.stopMonitoring()
                 discovery.stopDiscovery()
                 syncServer.stop()
@@ -70,6 +132,8 @@ fun MacroidApp() {
             connectedDevice = connectedDevice,
             isSearching = isSearching,
             clipboardHistory = clipboardHistory,
+            localIP = localIP,
+            connectionStatus = connectionStatus,
             onTextChanged = { newText ->
                 clipboardText = newText
                 clipboardMonitor.writeToClipboard(newText)
@@ -82,16 +146,62 @@ fun MacroidApp() {
             },
             onClearHistory = {
                 clipboardHistory.clear()
+                prefs.edit().remove("${HISTORY_KEY}_ordered").apply()
+            },
+            onConnectByIP = { ip ->
+                connectionStatus = "Connecting..."
+                CoroutineScope(Dispatchers.IO).launch {
+                    val device = DeviceInfo(
+                        alias = ip,
+                        deviceType = "desktop",
+                        fingerprint = "manual",
+                        address = ip,
+                        port = Discovery.PORT
+                    )
+                    val reachable = pingDevice(device)
+                    CoroutineScope(Dispatchers.Main).launch {
+                        if (reachable) {
+                            connectedDevice = device
+                            isSearching = false
+                            syncClient.setPeer(device)
+                            connectionStatus = "Connected to $ip"
+                            Log.d(TAG, "Manually connected to $ip")
+                        } else {
+                            connectionStatus = "Failed to connect to $ip"
+                            Log.w(TAG, "Failed to connect to $ip")
+                        }
+                    }
+                }
             }
         )
     }
 }
 
-private fun addToHistory(history: MutableList<String>, text: String) {
+private fun pingDevice(device: DeviceInfo): Boolean {
+    return try {
+        val url = URL("http://${device.address}:${device.port}/api/ping")
+        val connection = url.openConnection() as HttpURLConnection
+        connection.connectTimeout = 3000
+        connection.readTimeout = 3000
+        connection.requestMethod = "GET"
+        val response = connection.inputStream.bufferedReader().readText()
+        connection.disconnect()
+        response == "pong"
+    } catch (e: Exception) {
+        false
+    }
+}
+
+private fun addToHistory(
+    history: MutableList<String>,
+    text: String,
+    prefs: android.content.SharedPreferences
+) {
     if (text.isBlank()) return
     history.remove(text)
     history.add(0, text)
     while (history.size > MAX_HISTORY) {
         history.removeAt(history.size - 1)
     }
+    prefs.edit().putString("${HISTORY_KEY}_ordered", history.joinToString("\u0000")).apply()
 }
