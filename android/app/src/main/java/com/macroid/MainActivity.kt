@@ -1,7 +1,10 @@
 package com.macroid
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -20,9 +23,21 @@ class MainActivity : ComponentActivity() {
             startSyncService()
         }
 
+    private val stopReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            finishAndRemoveTask()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        registerReceiver(
+            stopReceiver,
+            IntentFilter(SyncForegroundService.ACTION_STOP),
+            Context.RECEIVER_NOT_EXPORTED
+        )
 
         requestNotificationPermission()
 
@@ -56,6 +71,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try { unregisterReceiver(stopReceiver) } catch (_: Exception) {}
         stopService(Intent(this, SyncForegroundService::class.java))
     }
 }

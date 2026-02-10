@@ -312,7 +312,14 @@ struct ContentView: View {
                 .fill(syncManager.connectedDevice != nil ? Color.green : Color.red)
                 .frame(width: 8, height: 8)
 
-            if let device = syncManager.connectedDevice {
+            if !syncManager.pasteStatus.isEmpty {
+                Text(syncManager.pasteStatus)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Color(hex: "4A90D9"))
+                    .lineLimit(1)
+
+                Spacer()
+            } else if let device = syncManager.connectedDevice {
                 Text("Connected to: \(device.alias)")
                     .font(.system(size: 12))
                     .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))

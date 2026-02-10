@@ -24,6 +24,7 @@ class SyncManager: ObservableObject {
     @Published var localIPAddress: String = ""
     @Published var connectionStatus: String = ""
     @Published var lastReceivedImage: Data?
+    @Published var pasteStatus: String = ""
 
     private var discovery: Discovery?
     private var syncServer: SyncServer?
@@ -307,13 +308,14 @@ class SyncManager: ObservableObject {
     func sendClipboardContent() {
         let pasteboard = NSPasteboard.general
         let types = pasteboard.types ?? []
-        AppLog.add("[SyncManager] Clipboard types: \(types.map { $0.rawValue })")
+        AppLog.add("[Paste] Clipboard types: \(types.map { $0.rawValue })")
 
         // 1. Check for direct image data (PNG)
         if let pngData = pasteboard.data(forType: .png), pngData.count > 0 {
             lastReceivedImage = pngData
             syncClient?.sendImage(pngData)
-            AppLog.add("[SyncManager] Sending clipboard PNG image (\(pngData.count) bytes)")
+            showPasteStatus("Sent image (\(pngData.count / 1024) KB)")
+            AppLog.add("[Paste] Sent PNG image (\(pngData.count) bytes)")
             return
         }
 
@@ -324,7 +326,8 @@ class SyncManager: ObservableObject {
            let pngData = bitmapRep.representation(using: .png, properties: [:]) {
             lastReceivedImage = pngData
             syncClient?.sendImage(pngData)
-            AppLog.add("[SyncManager] Sending clipboard TIFF→PNG image (\(pngData.count) bytes)")
+            showPasteStatus("Sent image (\(pngData.count / 1024) KB)")
+            AppLog.add("[Paste] Sent TIFF→PNG image (\(pngData.count) bytes)")
             return
         }
 
@@ -344,31 +347,29 @@ class SyncManager: ObservableObject {
                        let pngData = bitmapRep.representation(using: .png, properties: [:]) {
                         lastReceivedImage = pngData
                         syncClient?.sendImage(pngData)
-                        AppLog.add("[SyncManager] Sending file image (\(pngData.count) bytes) from \(fileURL.lastPathComponent)")
+                        showPasteStatus("Sent \(fileURL.lastPathComponent)")
+                        AppLog.add("[Paste] Sent file image (\(pngData.count) bytes) from \(fileURL.lastPathComponent)")
                         return
                     }
                 }
-                AppLog.add("[SyncManager] Failed to read image file: \(fileURL.lastPathComponent)")
+                showPasteStatus("Failed to read image file")
+                AppLog.add("[Paste] Failed to read image file: \(fileURL.lastPathComponent)")
             }
             // Non-image file: fall through to send filename as text
         }
 
-        // 4. Check for HTML content (Chrome, Safari, web browsers)
-        //    Extract plain text from it — browsers always also provide .string, but check HTML first for logging
-        if types.contains(NSPasteboard.PasteboardType("public.html")) {
-            AppLog.add("[SyncManager] Clipboard has HTML content, using plain text")
-        }
-
-        // 5. Check for plain text
+        // 4. Check for plain text (covers Chrome, Safari, and all apps)
         if let text = pasteboard.string(forType: .string), !text.isEmpty {
             clipboardText = text
             syncClient?.sendClipboard(text)
             addToHistory(text)
-            AppLog.add("[SyncManager] Sending clipboard text (\(text.count) chars)")
+            let preview = text.count > 30 ? String(text.prefix(30)) + "..." : text
+            showPasteStatus("Sent: \(preview)")
+            AppLog.add("[Paste] Sent text (\(text.count) chars)")
             return
         }
 
-        // 6. Try RTF as fallback
+        // 5. Try RTF as fallback
         if let rtfData = pasteboard.data(forType: .rtf),
            let attrString = NSAttributedString(rtf: rtfData, documentAttributes: nil) {
             let text = attrString.string
@@ -376,12 +377,23 @@ class SyncManager: ObservableObject {
                 clipboardText = text
                 syncClient?.sendClipboard(text)
                 addToHistory(text)
-                AppLog.add("[SyncManager] Sending clipboard RTF text (\(text.count) chars)")
+                showPasteStatus("Sent RTF text (\(text.count) chars)")
+                AppLog.add("[Paste] Sent RTF text (\(text.count) chars)")
                 return
             }
         }
 
-        AppLog.add("[SyncManager] No sendable content found on clipboard")
+        showPasteStatus("Nothing to send")
+        AppLog.add("[Paste] No sendable content on clipboard")
+    }
+
+    private func showPasteStatus(_ message: String) {
+        pasteStatus = message
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            if self?.pasteStatus == message {
+                self?.pasteStatus = ""
+            }
+        }
     }
 
     func clearHistory() {
