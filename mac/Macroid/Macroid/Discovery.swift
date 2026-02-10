@@ -40,6 +40,7 @@ class Discovery {
     }
 
     func startDiscovery(onDeviceFound: @escaping (DeviceInfo) -> Void) {
+        AppLog.add("[Discovery] Starting with fingerprint: \(String(fingerprint))")
         log.info("Starting discovery with fingerprint: \(String(self.fingerprint))")
         startMulticastListener(onDeviceFound: onDeviceFound)
         startAnnouncing()
@@ -77,9 +78,11 @@ class Discovery {
 
             groupConnection.start(queue: queue)
             self.multicastGroup = groupConnection
+            AppLog.add("[Discovery] Multicast listener started on \(Discovery.multicastGroup):\(Discovery.port)")
             log.info("Multicast listener started on \(Discovery.multicastGroup):\(Discovery.port)")
 
         } catch {
+            AppLog.add("[Discovery] ERROR: Multicast setup failed: \(error.localizedDescription)")
             log.error("Multicast setup failed: \(error.localizedDescription), using fallback discovery")
             startFallbackDiscovery(onDeviceFound: onDeviceFound)
         }
@@ -111,6 +114,7 @@ class Discovery {
             port: port
         )
 
+        AppLog.add("[Discovery] Found device via multicast: \(device.alias) at \(device.address):\(device.port)")
         log.info("Found device via multicast: \(device.alias) at \(device.address):\(device.port)")
         onDeviceFound(device)
 
@@ -123,34 +127,42 @@ class Discovery {
     }
 
     private func respondViaRegister(targetAddress: String, targetPort: Int) {
-        let cleanAddress = targetAddress.replacingOccurrences(of: "%", with: "%25")
-        guard let url = URL(string: "http://\(cleanAddress):\(targetPort)/api/localsend/v2/register") else {
-            log.warning("Invalid address for register: \(targetAddress)")
-            return
+        guard let body = try? JSONSerialization.data(withJSONObject: getDeviceInfo()) else { return }
+        let cleanAddress = targetAddress.replacingOccurrences(of: "%25", with: "").replacingOccurrences(of: "%", with: "")
+
+        guard let nwPort = NWEndpoint.Port(rawValue: UInt16(targetPort)) else { return }
+        let connection = NWConnection(host: NWEndpoint.Host(cleanAddress), port: nwPort, using: .tcp)
+
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready:
+                let httpRequest = "POST /api/localsend/v2/register HTTP/1.1\r\nHost: \(cleanAddress):\(targetPort)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+                var requestData = httpRequest.data(using: .utf8)!
+                requestData.append(body)
+                connection.send(content: requestData, completion: .contentProcessed { error in
+                    if let error = error {
+                        AppLog.add("[Discovery] Register send to \(cleanAddress) failed: \(error.localizedDescription)")
+                        self?.sendMulticastResponse()
+                    } else {
+                        AppLog.add("[Discovery] Register sent to \(cleanAddress):\(targetPort)")
+                    }
+                    connection.cancel()
+                })
+            case .failed(let error):
+                AppLog.add("[Discovery] Register connect to \(cleanAddress) failed: \(error.localizedDescription)")
+                self?.sendMulticastResponse()
+                connection.cancel()
+            default:
+                break
+            }
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 3
+        connection.start(queue: queue)
 
-        guard let body = try? JSONSerialization.data(withJSONObject: getDeviceInfo()) else { return }
-        request.httpBody = body
-
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 3
-        let session = URLSession(configuration: config)
-
-        session.dataTask(with: request) { _, response, error in
-            if let error = error {
-                log.warning("Register response failed to \(targetAddress): \(error.localizedDescription)")
-                // Fallback: send multicast with announce=false
-                self.sendMulticastResponse()
-            } else {
-                log.debug("Register response sent to \(targetAddress)")
-            }
-            session.invalidateAndCancel()
-        }.resume()
+        // Timeout
+        queue.asyncAfter(deadline: .now() + 3) {
+            connection.cancel()
+        }
     }
 
     private func sendMulticastResponse() {
@@ -197,6 +209,7 @@ class Discovery {
             return
         }
         let subnet = localIP.components(separatedBy: ".").prefix(3).joined(separator: ".")
+        AppLog.add("[Discovery] Starting fallback subnet scan on \(subnet).0/24")
         log.info("Starting fallback subnet scan on \(subnet).0/24")
 
         let scanQueue = DispatchQueue(label: "com.macroid.scan", attributes: .concurrent)
@@ -228,74 +241,95 @@ class Discovery {
         }
     }
 
-    private func tryInfoEndpoint(ip: String) -> DeviceInfo? {
-        guard let url = URL(string: "http://\(ip):\(Discovery.port)/api/localsend/v2/info") else { return nil }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 0.5
-
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 0.5
-        config.timeoutIntervalForResource = 1.0
-        let session = URLSession(configuration: config)
-
+    /// Raw TCP HTTP GET using NWConnection - bypasses ATS
+    /// Raw TCP HTTP GET using NWConnection - bypasses ATS
+    func rawHTTPGet(ip: String, port: UInt16, path: String, timeout: TimeInterval = 1.0) -> Data? {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else { return nil }
         let semaphore = DispatchSemaphore(value: 0)
-        var result: DeviceInfo?
+        var resultData: Data?
 
-        session.dataTask(with: request) { [weak self] data, _, error in
-            defer { semaphore.signal() }
-            guard let self = self, error == nil, let data = data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let connection = NWConnection(host: NWEndpoint.Host(ip), port: nwPort, using: .tcp)
+        var completed = false
 
-            guard let fp = json["fingerprint"] as? String, fp != String(self.fingerprint) else { return }
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                let request = "GET \(path) HTTP/1.1\r\nHost: \(ip):\(port)\r\nConnection: close\r\n\r\n"
+                connection.send(content: request.data(using: .utf8), completion: .contentProcessed { error in
+                    if error != nil {
+                        if !completed { completed = true; semaphore.signal() }
+                        return
+                    }
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
+                        if !completed {
+                            completed = true
+                            if let data = data, let response = String(data: data, encoding: .utf8) {
+                                // Extract body after \r\n\r\n
+                                if let range = response.range(of: "\r\n\r\n") {
+                                    let body = String(response[range.upperBound...])
+                                    resultData = body.data(using: .utf8)
+                                }
+                            }
+                            semaphore.signal()
+                        }
+                        connection.cancel()
+                    }
+                })
+            case .failed(_), .cancelled:
+                if !completed { completed = true; semaphore.signal() }
+            default:
+                break
+            }
+        }
+
+        connection.start(queue: DispatchQueue(label: "com.macroid.scan.\(ip)"))
+        _ = semaphore.wait(timeout: .now() + timeout)
+        if !completed { completed = true; connection.cancel() }
+        return resultData
+    }
+
+    private func tryInfoEndpoint(ip: String) -> DeviceInfo? {
+        // Try standard port and alternates
+        let portsToTry: [UInt16] = [Discovery.port, Discovery.port + 1, Discovery.port + 2]
+        for port in portsToTry {
+            guard let data = rawHTTPGet(ip: ip, port: port, path: "/api/localsend/v2/info"),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+
+            guard let fp = json["fingerprint"] as? String, fp != String(fingerprint) else { continue }
             let deviceType = json["deviceType"] as? String ?? "unknown"
-            guard deviceType == "mobile" else { return }
+            guard deviceType == "mobile" else { continue }
 
-            result = DeviceInfo(
+            let device = DeviceInfo(
                 alias: json["alias"] as? String ?? ip,
                 deviceType: deviceType,
                 fingerprint: fp,
                 address: ip,
-                port: json["port"] as? Int ?? Int(Discovery.port)
+                port: json["port"] as? Int ?? Int(port)
             )
-            log.info("Info endpoint found device at \(ip)")
-        }.resume()
-
-        _ = semaphore.wait(timeout: .now() + 1.0)
-        session.invalidateAndCancel()
-        return result
+            AppLog.add("[Discovery] Fallback info found device at \(ip):\(port): \(device.alias)")
+            return device
+        }
+        return nil
     }
 
     private func tryPingEndpoint(ip: String) -> DeviceInfo? {
-        guard let url = URL(string: "http://\(ip):\(Discovery.port)/api/ping") else { return nil }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 0.5
+        let portsToTry: [UInt16] = [Discovery.port, Discovery.port + 1, Discovery.port + 2]
+        for port in portsToTry {
+            guard let data = rawHTTPGet(ip: ip, port: port, path: "/api/ping"),
+                  let response = String(data: data, encoding: .utf8),
+                  response.contains("pong") else { continue }
 
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 0.5
-        config.timeoutIntervalForResource = 1.0
-        let session = URLSession(configuration: config)
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: DeviceInfo?
-
-        session.dataTask(with: request) { data, _, error in
-            defer { semaphore.signal() }
-            guard error == nil, let data = data,
-                  String(data: data, encoding: .utf8) == "pong" else { return }
-
-            result = DeviceInfo(
+            let device = DeviceInfo(
                 alias: ip,
                 deviceType: "mobile",
                 fingerprint: "fallback",
                 address: ip,
-                port: Int(Discovery.port)
+                port: Int(port)
             )
-            log.info("Ping fallback found device at \(ip)")
-        }.resume()
-
-        _ = semaphore.wait(timeout: .now() + 1.0)
-        session.invalidateAndCancel()
-        return result
+            AppLog.add("[Discovery] Fallback ping found device at \(ip):\(port)")
+            return device
+        }
+        return nil
     }
 
     func getLocalIPAddress() -> String? {

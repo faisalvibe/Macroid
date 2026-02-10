@@ -2,6 +2,7 @@ package com.macroid.network
 
 import android.util.Log
 import com.google.gson.Gson
+import com.macroid.util.AppLog
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.request.post
@@ -39,6 +40,7 @@ class SyncClient(private val deviceFingerprint: String) {
     fun setPeer(device: DeviceInfo) {
         peer = device
         Log.d(TAG, "Peer set: ${device.alias} at ${device.address}:${device.port}")
+        AppLog.add("[SyncClient] Peer set: ${device.alias} at ${device.address}:${device.port}")
     }
 
     fun sendImage(imageBytes: ByteArray) {
@@ -60,8 +62,10 @@ class SyncClient(private val deviceFingerprint: String) {
                     setBody(payload)
                 }
                 Log.d(TAG, "Sent image (${imageBytes.size} bytes) to ${device.alias}")
+                AppLog.add("[SyncClient] Sent image (${imageBytes.size} bytes) to ${device.alias}")
             } catch (e: Exception) {
                 Log.e(TAG, "Image send failed", e)
+                AppLog.add("[SyncClient] ERROR: Image send failed: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
     }
@@ -89,15 +93,18 @@ class SyncClient(private val deviceFingerprint: String) {
                         setBody(payload)
                     }
                     Log.d(TAG, "Sent clipboard (${text.length} chars) to ${device.alias}")
+                    AppLog.add("[SyncClient] Sent clipboard (${text.length} chars) to ${device.alias}")
                     return@launch
                 } catch (e: Exception) {
                     attempt++
                     if (attempt < MAX_RETRIES) {
                         Log.w(TAG, "Send failed (attempt $attempt/$MAX_RETRIES), retrying in ${backoff}ms", e)
+                        AppLog.add("[SyncClient] Send failed (attempt $attempt/$MAX_RETRIES): ${e.javaClass.simpleName}: ${e.message}")
                         delay(backoff)
                         backoff *= 2
                     } else {
                         Log.e(TAG, "Send failed after $MAX_RETRIES attempts", e)
+                        AppLog.add("[SyncClient] ERROR: Send failed after $MAX_RETRIES attempts: ${e.javaClass.simpleName}: ${e.message}")
                     }
                 }
             }
