@@ -25,8 +25,9 @@ class SyncClient(private val deviceFingerprint: String) {
     private val client = HttpClient(OkHttp) {
         engine {
             config {
-                connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
-                readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             }
         }
     }
@@ -56,16 +57,31 @@ class SyncClient(private val deviceFingerprint: String) {
                 )
             )
 
-            try {
-                client.post("http://${device.address}:${device.port}/api/clipboard/image") {
-                    contentType(ContentType.Application.Json)
-                    setBody(payload)
+            AppLog.add("[SyncClient] Sending image (${imageBytes.size} bytes, payload ${payload.length} chars) to ${device.alias}")
+
+            var attempt = 0
+            var backoff = INITIAL_BACKOFF_MS
+            while (attempt < MAX_RETRIES) {
+                try {
+                    client.post("http://${device.address}:${device.port}/api/clipboard/image") {
+                        contentType(ContentType.Application.Json)
+                        setBody(payload)
+                    }
+                    Log.d(TAG, "Sent image (${imageBytes.size} bytes) to ${device.alias}")
+                    AppLog.add("[SyncClient] Sent image successfully to ${device.alias}")
+                    return@launch
+                } catch (e: Exception) {
+                    attempt++
+                    if (attempt < MAX_RETRIES) {
+                        Log.w(TAG, "Image send failed (attempt $attempt/$MAX_RETRIES), retrying in ${backoff}ms", e)
+                        AppLog.add("[SyncClient] Image send failed (attempt $attempt/$MAX_RETRIES): ${e.javaClass.simpleName}: ${e.message}")
+                        delay(backoff)
+                        backoff *= 2
+                    } else {
+                        Log.e(TAG, "Image send failed after $MAX_RETRIES attempts", e)
+                        AppLog.add("[SyncClient] ERROR: Image send failed after $MAX_RETRIES attempts: ${e.javaClass.simpleName}: ${e.message}")
+                    }
                 }
-                Log.d(TAG, "Sent image (${imageBytes.size} bytes) to ${device.alias}")
-                AppLog.add("[SyncClient] Sent image (${imageBytes.size} bytes) to ${device.alias}")
-            } catch (e: Exception) {
-                Log.e(TAG, "Image send failed", e)
-                AppLog.add("[SyncClient] ERROR: Image send failed: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
     }

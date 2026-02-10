@@ -18,8 +18,10 @@ import com.macroid.network.Discovery
 import com.macroid.network.SyncClient
 import com.macroid.network.SyncServer
 import com.macroid.util.AppLog
+import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -62,6 +64,9 @@ fun MacroidApp() {
         val syncServer = remember { SyncServer(discovery.fingerprint, deviceInfoProvider = { discovery.getDeviceInfo() }) }
         val syncClient = remember { SyncClient(discovery.fingerprint) }
         var isUpdatingFromRemote by remember { mutableStateOf(false) }
+        val coroutineScope = rememberCoroutineScope()
+        var debounceJob by remember { mutableStateOf<Job?>(null) }
+        var lastSentText by remember { mutableStateOf("") }
 
         DisposableEffect(Unit) {
             AppLog.add("[MacroidApp] Starting up...")
@@ -113,12 +118,25 @@ fun MacroidApp() {
             }
 
             syncServer.start(onClipboardReceived = { incomingText ->
-                if (incomingText != clipboardText) {
-                    isUpdatingFromRemote = true
-                    clipboardText = incomingText
-                    addToHistory(clipboardHistory, incomingText, prefs)
-                    isUpdatingFromRemote = false
-                    AppLog.add("[MacroidApp] Received text (${incomingText.length} chars)")
+                CoroutineScope(Dispatchers.Main).launch {
+                    // If user is actively typing (debounce pending), ignore incoming text
+                    if (debounceJob?.isActive == true) {
+                        AppLog.add("[MacroidApp] Ignored incoming text (user is typing)")
+                        return@launch
+                    }
+                    // Ignore echo of text we just sent
+                    if (incomingText == lastSentText) {
+                        AppLog.add("[MacroidApp] Ignored echo text")
+                        return@launch
+                    }
+                    if (incomingText != clipboardText) {
+                        isUpdatingFromRemote = true
+                        clipboardText = incomingText
+                        addToHistory(clipboardHistory, incomingText, prefs)
+                        AppLog.add("[MacroidApp] Received text (${incomingText.length} chars)")
+                        delay(500)
+                        isUpdatingFromRemote = false
+                    }
                 }
             }, onImageReceived = { imageBytes ->
                 lastReceivedImage = imageBytes
@@ -171,7 +189,12 @@ fun MacroidApp() {
             onTextChanged = { newText ->
                 if (!isUpdatingFromRemote) {
                     clipboardText = newText
-                    syncClient.sendClipboard(newText)
+                    debounceJob?.cancel()
+                    debounceJob = coroutineScope.launch {
+                        delay(300)
+                        lastSentText = newText
+                        syncClient.sendClipboard(newText)
+                    }
                 }
             },
             onHistoryItemClicked = { text ->

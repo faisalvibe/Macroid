@@ -32,6 +32,7 @@ class SyncManager: ObservableObject {
     private var keepaliveTimer: DispatchSourceTimer?
     private var fingerprint: String = ""
     @Published private(set) var isUpdatingFromRemote = false
+    private var textSendWorkItem: DispatchWorkItem?
 
     init() {
         clipboardHistory = UserDefaults.standard.stringArray(forKey: historyKey) ?? []
@@ -104,11 +105,19 @@ class SyncManager: ObservableObject {
         server.start(onClipboardReceived: { [weak self] text in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                // If user is actively typing (debounce pending), ignore incoming text
+                if let workItem = self.textSendWorkItem, !workItem.isCancelled {
+                    AppLog.add("[SyncManager] Ignored incoming text (user is typing)")
+                    return
+                }
                 self.isUpdatingFromRemote = true
                 self.clipboardText = text
                 self.addToHistory(text)
-                self.isUpdatingFromRemote = false
                 AppLog.add("[SyncManager] Received text (\(text.count) chars)")
+                // Delay reset to catch async SwiftUI onChange
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.isUpdatingFromRemote = false
+                }
             }
         }, onImageReceived: { [weak self] imageData in
             DispatchQueue.main.async {
@@ -300,7 +309,13 @@ class SyncManager: ObservableObject {
 
     func onTextEdited(_ text: String) {
         guard !isUpdatingFromRemote else { return }
-        syncClient?.sendClipboard(text)
+        textSendWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.textSendWorkItem = nil
+            self?.syncClient?.sendClipboard(text)
+        }
+        textSendWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
     /// Send current system clipboard content (text or image) to the connected device
