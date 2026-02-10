@@ -306,31 +306,82 @@ class SyncManager: ObservableObject {
     /// Send current system clipboard content (text or image) to the connected device
     func sendClipboardContent() {
         let pasteboard = NSPasteboard.general
+        let types = pasteboard.types ?? []
+        AppLog.add("[SyncManager] Clipboard types: \(types.map { $0.rawValue })")
 
-        // Check for image first
-        if let pngData = pasteboard.data(forType: .png) {
+        // 1. Check for direct image data (PNG)
+        if let pngData = pasteboard.data(forType: .png), pngData.count > 0 {
             lastReceivedImage = pngData
             syncClient?.sendImage(pngData)
-            AppLog.add("[SyncManager] Sending clipboard image (\(pngData.count) bytes)")
+            AppLog.add("[SyncManager] Sending clipboard PNG image (\(pngData.count) bytes)")
             return
         }
-        if pasteboard.types?.contains(.tiff) == true,
+
+        // 2. Check for TIFF image data (screenshots, some apps)
+        if types.contains(.tiff),
            let tiffData = pasteboard.data(forType: .tiff),
            let bitmapRep = NSBitmapImageRep(data: tiffData),
            let pngData = bitmapRep.representation(using: .png, properties: [:]) {
             lastReceivedImage = pngData
             syncClient?.sendImage(pngData)
-            AppLog.add("[SyncManager] Sending clipboard image (\(pngData.count) bytes)")
+            AppLog.add("[SyncManager] Sending clipboard TIFF→PNG image (\(pngData.count) bytes)")
             return
         }
 
-        // Check for text
+        // 3. Check for file URLs (Finder file copy) — if it's an image file, send the image
+        if types.contains(.fileURL),
+           let urlString = pasteboard.string(forType: .fileURL),
+           let url = URL(string: urlString) {
+            let fileURL = url.standardizedFileURL
+            let ext = fileURL.pathExtension.lowercased()
+            let imageExtensions = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "heic", "tiff", "tif"]
+            if imageExtensions.contains(ext) {
+                if let imageData = try? Data(contentsOf: fileURL) {
+                    // Convert to PNG for consistency
+                    if let nsImage = NSImage(data: imageData),
+                       let tiffData = nsImage.tiffRepresentation,
+                       let bitmapRep = NSBitmapImageRep(data: tiffData),
+                       let pngData = bitmapRep.representation(using: .png, properties: [:]) {
+                        lastReceivedImage = pngData
+                        syncClient?.sendImage(pngData)
+                        AppLog.add("[SyncManager] Sending file image (\(pngData.count) bytes) from \(fileURL.lastPathComponent)")
+                        return
+                    }
+                }
+                AppLog.add("[SyncManager] Failed to read image file: \(fileURL.lastPathComponent)")
+            }
+            // Non-image file: fall through to send filename as text
+        }
+
+        // 4. Check for HTML content (Chrome, Safari, web browsers)
+        //    Extract plain text from it — browsers always also provide .string, but check HTML first for logging
+        if types.contains(NSPasteboard.PasteboardType("public.html")) {
+            AppLog.add("[SyncManager] Clipboard has HTML content, using plain text")
+        }
+
+        // 5. Check for plain text
         if let text = pasteboard.string(forType: .string), !text.isEmpty {
             clipboardText = text
             syncClient?.sendClipboard(text)
             addToHistory(text)
             AppLog.add("[SyncManager] Sending clipboard text (\(text.count) chars)")
+            return
         }
+
+        // 6. Try RTF as fallback
+        if let rtfData = pasteboard.data(forType: .rtf),
+           let attrString = NSAttributedString(rtf: rtfData, documentAttributes: nil) {
+            let text = attrString.string
+            if !text.isEmpty {
+                clipboardText = text
+                syncClient?.sendClipboard(text)
+                addToHistory(text)
+                AppLog.add("[SyncManager] Sending clipboard RTF text (\(text.count) chars)")
+                return
+            }
+        }
+
+        AppLog.add("[SyncManager] No sendable content found on clipboard")
     }
 
     func clearHistory() {
