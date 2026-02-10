@@ -86,6 +86,7 @@ class SyncServer {
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
 
+        // Read initial chunk (headers + start of body)
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self, let data = data else {
                 connection.cancel()
@@ -98,8 +99,71 @@ class SyncServer {
                 return
             }
 
+            // Parse Content-Length to check if we need to read more data
             let request = String(data: data, encoding: .utf8) ?? ""
-            self.routeRequest(request, connection: connection)
+            guard let headerEnd = request.range(of: "\r\n\r\n") else {
+                self.routeRequest(request, connection: connection)
+                return
+            }
+
+            let headerPart = String(request[request.startIndex..<headerEnd.lowerBound])
+            let bodyPart = String(request[headerEnd.upperBound...])
+
+            // Extract Content-Length
+            var contentLength = 0
+            for line in headerPart.components(separatedBy: "\r\n") {
+                if line.lowercased().hasPrefix("content-length:") {
+                    let value = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+                    contentLength = Int(value) ?? 0
+                    break
+                }
+            }
+
+            let bodyReceived = bodyPart.utf8.count
+            if contentLength <= 0 || bodyReceived >= contentLength {
+                self.routeRequest(request, connection: connection)
+            } else {
+                // Need to read more data for the full body (e.g. large images)
+                AppLog.add("[SyncServer] Body incomplete (\(bodyReceived)/\(contentLength) bytes), buffering...")
+                self.readRemainingBody(connection: connection, headerPart: headerPart, bodySoFar: Data(bodyPart.utf8), totalNeeded: contentLength)
+            }
+        }
+    }
+
+    private func readRemainingBody(connection: NWConnection, headerPart: String, bodySoFar: Data, totalNeeded: Int) {
+        let remaining = totalNeeded - bodySoFar.count
+        if remaining <= 0 {
+            let bodyString = String(data: bodySoFar, encoding: .utf8) ?? ""
+            let fullRequest = headerPart + "\r\n\r\n" + bodyString
+            self.routeRequest(fullRequest, connection: connection)
+            return
+        }
+
+        let chunkSize = min(remaining, 1_048_576)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: chunkSize) { [weak self] data, _, isComplete, error in
+            guard let self = self else {
+                connection.cancel()
+                return
+            }
+
+            if let data = data, !data.isEmpty {
+                var accumulated = bodySoFar
+                accumulated.append(data)
+
+                if accumulated.count >= totalNeeded {
+                    let bodyString = String(data: accumulated, encoding: .utf8) ?? ""
+                    let fullRequest = headerPart + "\r\n\r\n" + bodyString
+                    self.routeRequest(fullRequest, connection: connection)
+                } else {
+                    self.readRemainingBody(connection: connection, headerPart: headerPart, bodySoFar: accumulated, totalNeeded: totalNeeded)
+                }
+            } else {
+                // Connection closed or error - route what we have
+                AppLog.add("[SyncServer] Connection ended with \(bodySoFar.count)/\(totalNeeded) bytes")
+                let bodyString = String(data: bodySoFar, encoding: .utf8) ?? ""
+                let fullRequest = headerPart + "\r\n\r\n" + bodyString
+                self.routeRequest(fullRequest, connection: connection)
+            }
         }
     }
 

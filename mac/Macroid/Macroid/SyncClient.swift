@@ -117,8 +117,9 @@ class SyncClient {
 
         connection.start(queue: queue)
 
-        // Timeout
-        queue.asyncAfter(deadline: .now() + 5) {
+        // Timeout - longer for image uploads
+        let timeout: Double = path.contains("image") ? 30 : 5
+        queue.asyncAfter(deadline: .now() + timeout) {
             if !completed {
                 completed = true
                 AppLog.add("[SyncClient] Timeout sending to \(path)")

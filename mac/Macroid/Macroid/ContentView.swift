@@ -183,7 +183,10 @@ struct ContentView: View {
                         .cornerRadius(8)
                         .onTapGesture {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.writeObjects([nsImage])
+                            NSPasteboard.general.setData(imageData, forType: .png)
+                            if let tiffData = nsImage.tiffRepresentation {
+                                NSPasteboard.general.setData(tiffData, forType: .tiff)
+                            }
                             AppLog.add("[UI] Image copied to clipboard")
                         }
                     Text("Tap image to copy")

@@ -81,8 +81,12 @@ class ClipboardMonitor {
         lastRemoteImageHash = imageData.hashValue
         lock.unlock()
         pasteboard.clearContents()
-        if let image = NSImage(data: imageData) {
-            pasteboard.writeObjects([image])
+        // Write PNG data directly for maximum compatibility with Cmd+V paste
+        pasteboard.setData(imageData, forType: .png)
+        // Also write as TIFF for apps that prefer it
+        if let image = NSImage(data: imageData),
+           let tiffData = image.tiffRepresentation {
+            pasteboard.setData(tiffData, forType: .tiff)
         }
         lastChangeCount = pasteboard.changeCount
         log.debug("Wrote remote image to clipboard (\(imageData.count) bytes)")
