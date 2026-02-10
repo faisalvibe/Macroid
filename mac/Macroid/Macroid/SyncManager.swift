@@ -316,28 +316,7 @@ class SyncManager: ObservableObject {
         let types = pasteboard.types ?? []
         AppLog.add("[Paste] Clipboard types: \(types.map { $0.rawValue })")
 
-        // 1. Check for direct image data (PNG)
-        if let pngData = pasteboard.data(forType: .png), pngData.count > 0 {
-            lastReceivedImage = pngData
-            syncClient?.sendImage(pngData)
-            showPasteStatus("Sent image (\(pngData.count / 1024) KB)")
-            AppLog.add("[Paste] Sent PNG image (\(pngData.count) bytes)")
-            return
-        }
-
-        // 2. Check for TIFF image data (screenshots, some apps)
-        if types.contains(.tiff),
-           let tiffData = pasteboard.data(forType: .tiff),
-           let bitmapRep = NSBitmapImageRep(data: tiffData),
-           let pngData = bitmapRep.representation(using: .png, properties: [:]) {
-            lastReceivedImage = pngData
-            syncClient?.sendImage(pngData)
-            showPasteStatus("Sent image (\(pngData.count / 1024) KB)")
-            AppLog.add("[Paste] Sent TIFF→PNG image (\(pngData.count) bytes)")
-            return
-        }
-
-        // 3. Check for file URLs (Finder file copy) — if it's an image file, send the image
+        // 1. Check for file URLs FIRST (Finder file copy) — before TIFF which would be the file icon
         if types.contains(.fileURL),
            let urlString = pasteboard.string(forType: .fileURL),
            let url = URL(string: urlString) {
@@ -345,23 +324,41 @@ class SyncManager: ObservableObject {
             let ext = fileURL.pathExtension.lowercased()
             let imageExtensions = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "heic", "tiff", "tif"]
             if imageExtensions.contains(ext) {
-                if let imageData = try? Data(contentsOf: fileURL) {
-                    // Convert to PNG for consistency
-                    if let nsImage = NSImage(data: imageData),
-                       let tiffData = nsImage.tiffRepresentation,
-                       let bitmapRep = NSBitmapImageRep(data: tiffData),
-                       let pngData = bitmapRep.representation(using: .png, properties: [:]) {
-                        lastReceivedImage = pngData
-                        syncClient?.sendImage(pngData)
-                        showPasteStatus("Sent \(fileURL.lastPathComponent)")
-                        AppLog.add("[Paste] Sent file image (\(pngData.count) bytes) from \(fileURL.lastPathComponent)")
-                        return
-                    }
+                if let imageData = try? Data(contentsOf: fileURL),
+                   let nsImage = NSImage(data: imageData),
+                   let tiffData = nsImage.tiffRepresentation,
+                   let bitmapRep = NSBitmapImageRep(data: tiffData),
+                   let pngData = bitmapRep.representation(using: .png, properties: [:]) {
+                    sendImageAndSuppress(pngData)
+                    showPasteStatus("Sent \(fileURL.lastPathComponent)")
+                    AppLog.add("[Paste] Sent file image (\(pngData.count) bytes) from \(fileURL.lastPathComponent)")
+                    return
                 }
                 showPasteStatus("Failed to read image file")
                 AppLog.add("[Paste] Failed to read image file: \(fileURL.lastPathComponent)")
+                return
             }
-            // Non-image file: fall through to send filename as text
+            // Non-image file: fall through to text
+        }
+
+        // 2. Check for direct PNG image data
+        if let pngData = pasteboard.data(forType: .png), pngData.count > 0 {
+            sendImageAndSuppress(pngData)
+            showPasteStatus("Sent image (\(pngData.count / 1024) KB)")
+            AppLog.add("[Paste] Sent PNG image (\(pngData.count) bytes)")
+            return
+        }
+
+        // 3. Check for TIFF image data (screenshots, Chrome images)
+        if types.contains(.tiff),
+           !types.contains(.fileURL),
+           let tiffData = pasteboard.data(forType: .tiff),
+           let bitmapRep = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmapRep.representation(using: .png, properties: [:]) {
+            sendImageAndSuppress(pngData)
+            showPasteStatus("Sent image (\(pngData.count / 1024) KB)")
+            AppLog.add("[Paste] Sent TIFF→PNG image (\(pngData.count) bytes)")
+            return
         }
 
         // 4. Check for plain text (covers Chrome, Safari, and all apps)
@@ -391,6 +388,18 @@ class SyncManager: ObservableObject {
 
         showPasteStatus("Nothing to send")
         AppLog.add("[Paste] No sendable content on clipboard")
+    }
+
+    /// Send image and suppress any text changes from TextEditor paste for 0.5s
+    private func sendImageAndSuppress(_ pngData: Data) {
+        isUpdatingFromRemote = true
+        lastReceivedImage = pngData
+        syncClient?.sendImage(pngData)
+        // Suppress onTextEdited for a brief period so TextEditor's native paste
+        // doesn't also send garbage text alongside the image
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.isUpdatingFromRemote = false
+        }
     }
 
     private func showPasteStatus(_ message: String) {

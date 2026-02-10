@@ -113,7 +113,7 @@ fun MacroidApp() {
             }
 
             syncServer.start(onClipboardReceived = { incomingText ->
-                if (incomingText != clipboardText) {
+                if (incomingText != clipboardText && incomingText.isNotBlank()) {
                     isUpdatingFromRemote = true
                     clipboardText = incomingText
                     addToHistory(clipboardHistory, incomingText, prefs)
@@ -121,7 +121,10 @@ fun MacroidApp() {
                     AppLog.add("[MacroidApp] Received text (${incomingText.length} chars)")
                 }
             }, onImageReceived = { imageBytes ->
+                isUpdatingFromRemote = true
                 lastReceivedImage = imageBytes
+                clipboardText = ""
+                isUpdatingFromRemote = false
                 AppLog.add("[MacroidApp] Received image (${imageBytes.size} bytes)")
             })
 
