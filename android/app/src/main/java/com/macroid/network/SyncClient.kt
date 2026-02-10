@@ -43,14 +43,15 @@ class SyncClient(private val deviceFingerprint: String) {
         AppLog.add("[SyncClient] Peer set: ${device.alias} at ${device.address}:${device.port}")
     }
 
-    fun sendImage(imageBytes: ByteArray) {
+    /** Send image notification to peer (pull-based: peer fetches from our server) */
+    fun sendImage(imageBytes: ByteArray, localIP: String, localPort: Int) {
         val device = peer ?: return
+        val fetchUrl = "http://$localIP:$localPort/api/image/latest"
 
         CoroutineScope(Dispatchers.IO).launch {
-            val base64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
             val payload = gson.toJson(
                 mapOf(
-                    "image" to base64,
+                    "fetch_url" to fetchUrl,
                     "timestamp" to System.currentTimeMillis(),
                     "origin" to deviceFingerprint
                 )
@@ -61,11 +62,11 @@ class SyncClient(private val deviceFingerprint: String) {
                     contentType(ContentType.Application.Json)
                     setBody(payload)
                 }
-                Log.d(TAG, "Sent image (${imageBytes.size} bytes) to ${device.alias}")
-                AppLog.add("[SyncClient] Sent image (${imageBytes.size} bytes) to ${device.alias}")
+                Log.d(TAG, "Sent image notification (${imageBytes.size} bytes available at $fetchUrl) to ${device.alias}")
+                AppLog.add("[SyncClient] Sent image notification to ${device.alias}, fetchable at $fetchUrl")
             } catch (e: Exception) {
-                Log.e(TAG, "Image send failed", e)
-                AppLog.add("[SyncClient] ERROR: Image send failed: ${e.javaClass.simpleName}: ${e.message}")
+                Log.e(TAG, "Image notification failed", e)
+                AppLog.add("[SyncClient] ERROR: Image notification failed: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
     }

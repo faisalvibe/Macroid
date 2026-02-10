@@ -171,7 +171,6 @@ fun MacroidApp() {
             onTextChanged = { newText ->
                 if (!isUpdatingFromRemote) {
                     clipboardText = newText
-                    syncClient.sendClipboard(newText)
                 }
             },
             onHistoryItemClicked = { text ->
@@ -230,7 +229,7 @@ fun MacroidApp() {
                 }
             },
             onSendClipboard = {
-                sendClipboardContent(context, syncClient, { clipboardText = it }, { lastReceivedImage = it })
+                sendClipboardContent(context, syncClient, syncServer, localIP, { clipboardText = it }, { lastReceivedImage = it })
             }
         )
     }
@@ -239,6 +238,8 @@ fun MacroidApp() {
 private fun sendClipboardContent(
     context: Context,
     syncClient: SyncClient,
+    syncServer: SyncServer,
+    localIP: String,
     onTextFound: (String) -> Unit,
     onImageFound: (ByteArray) -> Unit
 ) {
@@ -259,7 +260,8 @@ private fun sendClipboardContent(
                     bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
                     val imageBytes = baos.toByteArray()
                     CoroutineScope(Dispatchers.Main).launch { onImageFound(imageBytes) }
-                    syncClient.sendImage(imageBytes)
+                    syncServer.setLatestImage(imageBytes)
+                    syncClient.sendImage(imageBytes, localIP, syncServer.actualPort)
                     AppLog.add("[MacroidApp] Sending clipboard image (${imageBytes.size} bytes)")
                 }
             } catch (e: Exception) {

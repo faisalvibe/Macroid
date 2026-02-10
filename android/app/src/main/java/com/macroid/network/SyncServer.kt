@@ -14,6 +14,7 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.gson.gson
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -45,6 +46,13 @@ class SyncServer(
 
     private var onClipboardReceivedCallback: ((String) -> Unit)? = null
     private var onImageReceivedCallback: ((ByteArray) -> Unit)? = null
+    @Volatile
+    private var latestImageData: ByteArray? = null
+
+    /** Store an image so peers can fetch it via GET /api/image/latest */
+    fun setLatestImage(data: ByteArray) {
+        latestImageData = data
+    }
 
     fun start(onClipboardReceived: (String) -> Unit, onImageReceived: (ByteArray) -> Unit = {}) {
         this.onClipboardReceivedCallback = onClipboardReceived
@@ -117,6 +125,18 @@ class SyncServer(
                                 return@post
                             }
 
+                            // Pull-based: notification with fetch_url — download image from sender
+                            val fetchUrl = data["fetch_url"] as? String
+                            if (fetchUrl != null) {
+                                AppLog.add("[SyncServer] Image notification received, fetching from $fetchUrl")
+                                CoroutineScope(Dispatchers.IO).launch {
+                                    fetchImageFromPeer(fetchUrl)
+                                }
+                                call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))
+                                return@post
+                            }
+
+                            // Legacy: base64 inline image
                             val base64Image = data["image"] as? String ?: ""
                             val imageBytes = android.util.Base64.decode(base64Image, android.util.Base64.DEFAULT)
 
@@ -134,6 +154,16 @@ class SyncServer(
                         } catch (e: Exception) {
                             Log.e(TAG, "Error processing image POST", e)
                             call.respond(HttpStatusCode.BadRequest, mapOf("error" to (e.message ?: "unknown")))
+                        }
+                    }
+
+                    // Serve latest stored image as raw PNG
+                    get("/api/image/latest") {
+                        val imageData = latestImageData
+                        if (imageData != null) {
+                            call.respondBytes(imageData, ContentType.Image.PNG)
+                        } else {
+                            call.respond(HttpStatusCode.NotFound, mapOf("error" to "no image"))
                         }
                     }
 
@@ -206,6 +236,33 @@ class SyncServer(
             } else {
                 AppLog.add("[SyncServer] ERROR: All ports failed, server not running")
             }
+        }
+    }
+
+    /** Fetch image from peer via HTTP GET (raw binary) */
+    private fun fetchImageFromPeer(urlString: String) {
+        try {
+            val url = java.net.URL(urlString)
+            val connection = url.openConnection() as java.net.HttpURLConnection
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 30_000
+            connection.requestMethod = "GET"
+
+            if (connection.responseCode == 200) {
+                val imageBytes = connection.inputStream.readBytes()
+                connection.disconnect()
+                if (imageBytes.isNotEmpty()) {
+                    AppLog.add("[SyncServer] Fetched image (${imageBytes.size} bytes) from $urlString")
+                    CoroutineScope(Dispatchers.Main).launch {
+                        onImageReceivedCallback?.invoke(imageBytes)
+                    }
+                }
+            } else {
+                AppLog.add("[SyncServer] Image fetch failed: HTTP ${connection.responseCode}")
+                connection.disconnect()
+            }
+        } catch (e: Exception) {
+            AppLog.add("[SyncServer] ERROR fetching image from $urlString: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 

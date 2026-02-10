@@ -306,11 +306,13 @@ class SyncManager: ObservableObject {
     /// Send current system clipboard content (text or image) to the connected device
     func sendClipboardContent() {
         let pasteboard = NSPasteboard.general
+        let serverPort = syncServer?.actualPort ?? Discovery.port
 
         // Check for image first
         if let pngData = pasteboard.data(forType: .png) {
             lastReceivedImage = pngData
-            syncClient?.sendImage(pngData)
+            syncServer?.setLatestImage(pngData)
+            syncClient?.sendImage(pngData, localPort: serverPort)
             AppLog.add("[SyncManager] Sending clipboard image (\(pngData.count) bytes)")
             return
         }
@@ -319,7 +321,8 @@ class SyncManager: ObservableObject {
            let bitmapRep = NSBitmapImageRep(data: tiffData),
            let pngData = bitmapRep.representation(using: .png, properties: [:]) {
             lastReceivedImage = pngData
-            syncClient?.sendImage(pngData)
+            syncServer?.setLatestImage(pngData)
+            syncClient?.sendImage(pngData, localPort: serverPort)
             AppLog.add("[SyncManager] Sending clipboard image (\(pngData.count) bytes)")
             return
         }

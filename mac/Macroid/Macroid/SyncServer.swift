@@ -16,6 +16,9 @@ class SyncServer {
     private let maxBodySize = 1_048_576 // 1MB
     private let maxImageSize = 10_485_760 // 10MB
     private(set) var actualPort: UInt16
+    /// Stored image available for peers to download via GET /api/image/latest
+    private var latestImageData: Data?
+    private let imageLock = NSLock()
     var deviceInfoProvider: (() -> [String: Any])?
     var onDeviceRegistered: ((DeviceInfo) -> Void)?
     var onPeerActivity: ((String) -> Void)?
@@ -26,6 +29,13 @@ class SyncServer {
     }
 
     var onReady: (() -> Void)?
+
+    /// Store an image so peers can fetch it via GET /api/image/latest
+    func setLatestImage(_ data: Data) {
+        imageLock.lock()
+        latestImageData = data
+        imageLock.unlock()
+    }
 
     func start(onClipboardReceived: @escaping (String) -> Void, onImageReceived: @escaping (Data) -> Void = { _ in }) {
         self.onClipboardReceived = onClipboardReceived
@@ -197,6 +207,8 @@ class SyncServer {
             handleClipboardPost(request: request, connection: connection)
         } else if method == "POST" && path == "/api/clipboard/image" {
             handleImagePost(request: request, connection: connection)
+        } else if method == "GET" && path == "/api/image/latest" {
+            handleImageGet(connection: connection)
         } else if method == "GET" && path == "/api/localsend/v2/info" {
             handleInfoGet(connection: connection)
         } else if method == "POST" && path.hasPrefix("/api/localsend/v2/register") {
@@ -336,6 +348,15 @@ class SyncServer {
             return
         }
 
+        // Pull-based: notification with fetch_url — download the image from sender
+        if let fetchURL = json["fetch_url"] as? String {
+            AppLog.add("[SyncServer] Image notification received, fetching from \(fetchURL)")
+            fetchImageFromPeer(urlString: fetchURL)
+            sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
+            return
+        }
+
+        // Legacy: base64 inline image
         guard let base64String = json["image"] as? String,
               let imageData = Data(base64Encoded: base64String) else {
             sendResponse(connection: connection, status: 400, body: "{\"error\":\"invalid image data\"}")
@@ -350,6 +371,108 @@ class SyncServer {
         log.info("Received image (\(imageData.count) bytes) from origin=\(origin)")
         onImageReceived?(imageData)
         sendResponse(connection: connection, status: 200, body: "{\"status\":\"ok\"}")
+    }
+
+    /// Serve the latest stored image as raw PNG
+    private func handleImageGet(connection: NWConnection) {
+        imageLock.lock()
+        let data = latestImageData
+        imageLock.unlock()
+
+        guard let imageData = data else {
+            sendResponse(connection: connection, status: 404, body: "{\"error\":\"no image\"}")
+            return
+        }
+
+        let header = "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: \(imageData.count)\r\nConnection: close\r\n\r\n"
+        var responseData = header.data(using: .utf8)!
+        responseData.append(imageData)
+        connection.send(content: responseData, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
+    }
+
+    /// Fetch image from peer using raw TCP (bypasses URLSession/ATS)
+    private func fetchImageFromPeer(urlString: String) {
+        // Parse URL: http://host:port/path
+        guard let url = URL(string: urlString),
+              let host = url.host,
+              let portNum = url.port ?? (url.scheme == "http" ? 80 : nil),
+              let nwPort = NWEndpoint.Port(rawValue: UInt16(portNum)) else {
+            AppLog.add("[SyncServer] Invalid fetch URL: \(urlString)")
+            return
+        }
+        let path = url.path.isEmpty ? "/" : url.path
+
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
+        var completed = false
+
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self = self, !completed else { return }
+            switch state {
+            case .ready:
+                let request = "GET \(path) HTTP/1.1\r\nHost: \(host):\(portNum)\r\nConnection: close\r\n\r\n"
+                connection.send(content: request.data(using: .utf8), completion: .contentProcessed { error in
+                    if let error = error {
+                        AppLog.add("[SyncServer] Image fetch send error: \(error.localizedDescription)")
+                        completed = true
+                        connection.cancel()
+                        return
+                    }
+                    // Read the full response
+                    self.readFullResponse(connection: connection, accumulated: Data()) { responseData in
+                        completed = true
+                        connection.cancel()
+                        guard let responseData = responseData else {
+                            AppLog.add("[SyncServer] Image fetch: no response data")
+                            return
+                        }
+                        // Split headers from body
+                        let separator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
+                        if let range = responseData.range(of: separator) {
+                            let imageData = responseData.subdata(in: range.upperBound..<responseData.endIndex)
+                            if imageData.count > 0 {
+                                AppLog.add("[SyncServer] Fetched image (\(imageData.count) bytes)")
+                                self.onImageReceived?(imageData)
+                            }
+                        }
+                    }
+                })
+            case .failed(let error):
+                AppLog.add("[SyncServer] Image fetch TCP failed: \(error.localizedDescription)")
+                completed = true
+                connection.cancel()
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+
+        queue.asyncAfter(deadline: .now() + 30) {
+            if !completed {
+                completed = true
+                AppLog.add("[SyncServer] Image fetch timeout")
+                connection.cancel()
+            }
+        }
+    }
+
+    private func readFullResponse(connection: NWConnection, accumulated: Data, completion: @escaping (Data?) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { data, _, isComplete, error in
+            if let data = data, !data.isEmpty {
+                var newAccumulated = accumulated
+                newAccumulated.append(data)
+                if isComplete {
+                    completion(newAccumulated)
+                } else {
+                    self.readFullResponse(connection: connection, accumulated: newAccumulated, completion: completion)
+                }
+            } else if accumulated.count > 0 {
+                completion(accumulated)
+            } else {
+                completion(nil)
+            }
+        }
     }
 
     private func sendResponse(connection: NWConnection, status: Int, body: String, contentType: String = "application/json") {
