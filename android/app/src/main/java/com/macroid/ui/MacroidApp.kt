@@ -246,38 +246,78 @@ private fun sendClipboardContent(
     onImageFound: (ByteArray) -> Unit
 ) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    if (!cm.hasPrimaryClip()) return
+    if (!cm.hasPrimaryClip()) {
+        AppLog.add("[Paste] No clipboard content")
+        return
+    }
     val clip = cm.primaryClip ?: return
     val item = clip.getItemAt(0) ?: return
 
-    // Check for image
+    // Log clipboard info for debugging
+    val mimeTypes = (0 until clip.description.mimeTypeCount).map { clip.description.getMimeType(it) }
+    AppLog.add("[Paste] MIME types: $mimeTypes, hasUri=${item.uri != null}, hasText=${item.text != null}")
+
+    // Check for image — try URI first, then check clip description MIME types
     val uri = item.uri
     if (uri != null) {
+        // Try contentResolver MIME type first, fall back to clip description
         val mimeType = context.contentResolver.getType(uri)
+            ?: mimeTypes.firstOrNull { it.startsWith("image/") }
+
         if (mimeType != null && mimeType.startsWith("image/")) {
             try {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
-                    val bitmap = BitmapFactory.decodeStream(stream) ?: return
-                    val baos = ByteArrayOutputStream()
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
-                    val imageBytes = baos.toByteArray()
-                    CoroutineScope(Dispatchers.Main).launch { onImageFound(imageBytes) }
-                    syncClient.sendImage(imageBytes)
-                    AppLog.add("[MacroidApp] Sending clipboard image (${imageBytes.size} bytes)")
+                    val bitmap = BitmapFactory.decodeStream(stream)
+                    if (bitmap != null) {
+                        val baos = ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
+                        val imageBytes = baos.toByteArray()
+                        CoroutineScope(Dispatchers.Main).launch {
+                            onImageFound(imageBytes)
+                            onTextFound("") // Clear any text
+                        }
+                        syncClient.sendImage(imageBytes)
+                        AppLog.add("[Paste] Sent image (${imageBytes.size} bytes)")
+                        return
+                    }
                 }
             } catch (e: Exception) {
-                AppLog.add("[MacroidApp] ERROR reading clipboard image: ${e.message}")
+                AppLog.add("[Paste] ERROR reading image URI: ${e.message}")
             }
-            return
+        }
+
+        // URI exists but not an image or failed to read — try to decode as image anyway
+        if (mimeType == null || !mimeType.startsWith("text/")) {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val bitmap = BitmapFactory.decodeStream(stream)
+                    if (bitmap != null) {
+                        val baos = ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
+                        val imageBytes = baos.toByteArray()
+                        CoroutineScope(Dispatchers.Main).launch {
+                            onImageFound(imageBytes)
+                            onTextFound("")
+                        }
+                        syncClient.sendImage(imageBytes)
+                        AppLog.add("[Paste] Sent image via fallback decode (${imageBytes.size} bytes)")
+                        return
+                    }
+                }
+            } catch (_: Exception) {
+                // Not an image, fall through to text
+            }
         }
     }
 
-    // Check for text
-    val text = item.text?.toString()
-    if (!text.isNullOrEmpty()) {
+    // Check for text — coerce item to text using Android's built-in conversion
+    val text = item.coerceToText(context)?.toString()
+    if (!text.isNullOrBlank()) {
         CoroutineScope(Dispatchers.Main).launch { onTextFound(text) }
         syncClient.sendClipboard(text)
-        AppLog.add("[MacroidApp] Sending clipboard text (${text.length} chars)")
+        AppLog.add("[Paste] Sent text (${text.length} chars)")
+    } else {
+        AppLog.add("[Paste] No sendable content found")
     }
 }
 
