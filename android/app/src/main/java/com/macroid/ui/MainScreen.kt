@@ -63,7 +63,8 @@ fun MainScreen(
     onTextChanged: (String) -> Unit,
     onHistoryItemClicked: (String) -> Unit,
     onClearHistory: () -> Unit,
-    onConnectByIP: (String) -> Unit
+    onConnectByIP: (String) -> Unit,
+    onSendClipboard: () -> Unit = {}
 ) {
     // 0 = editor, 1 = history, 2 = logs
     var currentTab by remember { mutableStateOf(0) }
@@ -76,7 +77,8 @@ fun MainScreen(
         TopBar(
             isConnected = connectedDevice != null,
             currentTab = currentTab,
-            onTabChanged = { currentTab = it }
+            onTabChanged = { currentTab = it },
+            onSendClipboard = onSendClipboard
         )
 
         HorizontalDivider(
@@ -203,7 +205,8 @@ fun MainScreen(
 private fun TopBar(
     isConnected: Boolean,
     currentTab: Int,
-    onTabChanged: (Int) -> Unit
+    onTabChanged: (Int) -> Unit,
+    onSendClipboard: () -> Unit = {}
 ) {
     Row(
         modifier = Modifier
@@ -221,6 +224,22 @@ private fun TopBar(
         )
 
         Spacer(modifier = Modifier.weight(1f))
+
+        TextButton(
+            onClick = onSendClipboard,
+            enabled = isConnected
+        ) {
+            Text(
+                text = "Paste",
+                style = TextStyle(
+                    fontSize = 14.sp,
+                    color = if (isConnected)
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                )
+            )
+        }
 
         val tabs = listOf("Editor", "History", "Logs")
         tabs.forEachIndexed { index, label ->

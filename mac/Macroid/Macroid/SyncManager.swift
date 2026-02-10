@@ -28,7 +28,6 @@ class SyncManager: ObservableObject {
     private var discovery: Discovery?
     private var syncServer: SyncServer?
     private var syncClient: SyncClient?
-    private var clipboardMonitor: ClipboardMonitor?
     private let syncQueue = DispatchQueue(label: "com.macroid.syncmanager")
     private var keepaliveTimer: DispatchSourceTimer?
     private var fingerprint: String = ""
@@ -107,17 +106,15 @@ class SyncManager: ObservableObject {
                 guard let self = self else { return }
                 self.isUpdatingFromRemote = true
                 self.clipboardText = text
-                self.clipboardMonitor?.writeToClipboard(text)
                 self.addToHistory(text)
                 self.isUpdatingFromRemote = false
-                AppLog.add("[SyncManager] Received remote clipboard (\(text.count) chars)")
+                AppLog.add("[SyncManager] Received text (\(text.count) chars)")
             }
         }, onImageReceived: { [weak self] imageData in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.lastReceivedImage = imageData
-                self.clipboardMonitor?.writeImageToClipboard(imageData)
-                AppLog.add("[SyncManager] Received remote image (\(imageData.count) bytes)")
+                AppLog.add("[SyncManager] Received image (\(imageData.count) bytes)")
             }
         })
 
@@ -131,24 +128,6 @@ class SyncManager: ObservableObject {
             // Register with the discovered device so it knows about us
             self?.registerWithPeer(ip: device.address, port: UInt16(device.port))
         }
-
-        clipboardMonitor = ClipboardMonitor()
-        clipboardMonitor?.startMonitoring(onClipboardChanged: { [weak self] newText in
-            DispatchQueue.main.async {
-                guard let self = self, !self.isUpdatingFromRemote else { return }
-                if newText != self.clipboardText {
-                    self.clipboardText = newText
-                    self.syncClient?.sendClipboard(newText)
-                    self.addToHistory(newText)
-                }
-            }
-        }, onImageChanged: { [weak self] imageData in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                self.lastReceivedImage = imageData
-            }
-            self.syncClient?.sendImage(imageData)
-        })
 
         startKeepalive()
         AppLog.add("[SyncManager] Setup complete")
@@ -321,8 +300,37 @@ class SyncManager: ObservableObject {
 
     func onTextEdited(_ text: String) {
         guard !isUpdatingFromRemote else { return }
-        clipboardMonitor?.writeToClipboard(text)
         syncClient?.sendClipboard(text)
+    }
+
+    /// Send current system clipboard content (text or image) to the connected device
+    func sendClipboardContent() {
+        let pasteboard = NSPasteboard.general
+
+        // Check for image first
+        if let pngData = pasteboard.data(forType: .png) {
+            lastReceivedImage = pngData
+            syncClient?.sendImage(pngData)
+            AppLog.add("[SyncManager] Sending clipboard image (\(pngData.count) bytes)")
+            return
+        }
+        if pasteboard.types?.contains(.tiff) == true,
+           let tiffData = pasteboard.data(forType: .tiff),
+           let bitmapRep = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmapRep.representation(using: .png, properties: [:]) {
+            lastReceivedImage = pngData
+            syncClient?.sendImage(pngData)
+            AppLog.add("[SyncManager] Sending clipboard image (\(pngData.count) bytes)")
+            return
+        }
+
+        // Check for text
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            clipboardText = text
+            syncClient?.sendClipboard(text)
+            addToHistory(text)
+            AppLog.add("[SyncManager] Sending clipboard text (\(text.count) chars)")
+        }
     }
 
     func clearHistory() {
@@ -332,7 +340,6 @@ class SyncManager: ObservableObject {
 
     func restoreFromHistory(_ text: String) {
         clipboardText = text
-        clipboardMonitor?.writeToClipboard(text)
         syncClient?.sendClipboard(text)
     }
 
@@ -353,7 +360,6 @@ class SyncManager: ObservableObject {
     private func stopAll() {
         keepaliveTimer?.cancel()
         keepaliveTimer = nil
-        clipboardMonitor?.stopMonitoring()
         discovery?.stopDiscovery()
         syncServer?.stop()
         AppLog.add("[SyncManager] Stopped all components")

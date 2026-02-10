@@ -87,6 +87,16 @@ struct ContentView: View {
             Spacer()
 
             Button(action: {
+                syncManager.sendClipboardContent()
+            }) {
+                Text("Paste")
+                    .font(.system(size: 13))
+                    .foregroundColor(syncManager.connectedDevice != nil ? Color(hex: "4A90D9") : Color(hex: "4A90D9").opacity(0.4))
+            }
+            .buttonStyle(.plain)
+            .disabled(syncManager.connectedDevice == nil)
+
+            Button(action: {
                 showLogs = false
                 showHistory.toggle()
             }) {

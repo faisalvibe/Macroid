@@ -1,6 +1,9 @@
 package com.macroid.ui
 
+import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -10,7 +13,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
-import com.macroid.clipboard.ClipboardMonitor
 import com.macroid.network.DeviceInfo
 import com.macroid.network.Discovery
 import com.macroid.network.SyncClient
@@ -22,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import com.google.gson.Gson
+import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -58,7 +61,7 @@ fun MacroidApp() {
 
         val syncServer = remember { SyncServer(discovery.fingerprint, deviceInfoProvider = { discovery.getDeviceInfo() }) }
         val syncClient = remember { SyncClient(discovery.fingerprint) }
-        val clipboardMonitor = remember { ClipboardMonitor(context) }
+        var isUpdatingFromRemote by remember { mutableStateOf(false) }
 
         DisposableEffect(Unit) {
             AppLog.add("[MacroidApp] Starting up...")
@@ -111,15 +114,15 @@ fun MacroidApp() {
 
             syncServer.start(onClipboardReceived = { incomingText ->
                 if (incomingText != clipboardText) {
+                    isUpdatingFromRemote = true
                     clipboardText = incomingText
-                    clipboardMonitor.writeToClipboard(incomingText)
                     addToHistory(clipboardHistory, incomingText, prefs)
-                    AppLog.add("[MacroidApp] Received remote clipboard (${incomingText.length} chars)")
+                    isUpdatingFromRemote = false
+                    AppLog.add("[MacroidApp] Received text (${incomingText.length} chars)")
                 }
             }, onImageReceived = { imageBytes ->
                 lastReceivedImage = imageBytes
-                clipboardMonitor.writeImageToClipboard(imageBytes)
-                AppLog.add("[MacroidApp] Received remote image (${imageBytes.size} bytes)")
+                AppLog.add("[MacroidApp] Received image (${imageBytes.size} bytes)")
             })
 
             discovery.startDiscovery { device ->
@@ -131,17 +134,6 @@ fun MacroidApp() {
             }
 
             AppLog.add("[MacroidApp] Discovery started")
-
-            clipboardMonitor.startMonitoring(onClipboardChanged = { newText ->
-                if (newText != clipboardText) {
-                    clipboardText = newText
-                    syncClient.sendClipboard(newText)
-                    addToHistory(clipboardHistory, newText, prefs)
-                }
-            }, onImageChanged = { imageBytes ->
-                lastReceivedImage = imageBytes
-                syncClient.sendImage(imageBytes)
-            })
 
             val keepaliveJob = CoroutineScope(Dispatchers.IO).launch {
                 delay(10_000)
@@ -163,7 +155,6 @@ fun MacroidApp() {
 
             onDispose {
                 keepaliveJob.cancel()
-                clipboardMonitor.stopMonitoring()
                 discovery.stopDiscovery()
                 syncServer.stop()
             }
@@ -178,13 +169,13 @@ fun MacroidApp() {
             connectionStatus = connectionStatus,
             lastReceivedImage = lastReceivedImage,
             onTextChanged = { newText ->
-                clipboardText = newText
-                clipboardMonitor.writeToClipboard(newText)
-                syncClient.sendClipboard(newText)
+                if (!isUpdatingFromRemote) {
+                    clipboardText = newText
+                    syncClient.sendClipboard(newText)
+                }
             },
             onHistoryItemClicked = { text ->
                 clipboardText = text
-                clipboardMonitor.writeToClipboard(text)
                 syncClient.sendClipboard(text)
             },
             onClearHistory = {
@@ -237,8 +228,53 @@ fun MacroidApp() {
                         }
                     }
                 }
+            },
+            onSendClipboard = {
+                sendClipboardContent(context, syncClient, { clipboardText = it }, { lastReceivedImage = it })
             }
         )
+    }
+}
+
+private fun sendClipboardContent(
+    context: Context,
+    syncClient: SyncClient,
+    onTextFound: (String) -> Unit,
+    onImageFound: (ByteArray) -> Unit
+) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    if (!cm.hasPrimaryClip()) return
+    val clip = cm.primaryClip ?: return
+    val item = clip.getItemAt(0) ?: return
+
+    // Check for image
+    val uri = item.uri
+    if (uri != null) {
+        val mimeType = context.contentResolver.getType(uri)
+        if (mimeType != null && mimeType.startsWith("image/")) {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val bitmap = BitmapFactory.decodeStream(stream) ?: return
+                    val baos = ByteArrayOutputStream()
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
+                    val imageBytes = baos.toByteArray()
+                    CoroutineScope(Dispatchers.Main).launch { onImageFound(imageBytes) }
+                    syncClient.sendImage(imageBytes)
+                    AppLog.add("[MacroidApp] Sending clipboard image (${imageBytes.size} bytes)")
+                }
+            } catch (e: Exception) {
+                AppLog.add("[MacroidApp] ERROR reading clipboard image: ${e.message}")
+            }
+            return
+        }
+    }
+
+    // Check for text
+    val text = item.text?.toString()
+    if (!text.isNullOrEmpty()) {
+        CoroutineScope(Dispatchers.Main).launch { onTextFound(text) }
+        syncClient.sendClipboard(text)
+        AppLog.add("[MacroidApp] Sending clipboard text (${text.length} chars)")
     }
 }
 
