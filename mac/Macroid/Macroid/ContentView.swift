@@ -2,16 +2,20 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var syncManager: SyncManager
+    @ObservedObject var appLog = AppLog.shared
     @Environment(\.colorScheme) var colorScheme
     @State private var showHistory = false
     @State private var showConnectSheet = false
+    @State private var showLogs = false
     @State private var manualIP = ""
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
             Divider()
-            if showHistory {
+            if showLogs {
+                logPanel
+            } else if showHistory {
                 historyPanel
             } else {
                 editorArea
@@ -82,12 +86,36 @@ struct ContentView: View {
 
             Spacer()
 
-            Button(action: { showHistory.toggle() }) {
+            Button(action: {
+                syncManager.sendClipboardContent()
+            }) {
+                Text("Paste")
+                    .font(.system(size: 13))
+                    .foregroundColor(syncManager.connectedDevice != nil ? Color(hex: "4A90D9") : Color(hex: "4A90D9").opacity(0.4))
+            }
+            .buttonStyle(.plain)
+            .disabled(syncManager.connectedDevice == nil)
+
+            Button(action: {
+                showLogs = false
+                showHistory.toggle()
+            }) {
                 Text(showHistory ? "Editor" : "History")
                     .font(.system(size: 13))
                     .foregroundColor(Color(hex: "4A90D9"))
             }
             .buttonStyle(.plain)
+
+            Button(action: {
+                showHistory = false
+                showLogs.toggle()
+            }) {
+                Text("Logs")
+                    .font(.system(size: 13))
+                    .foregroundColor(showLogs ? .orange : Color(hex: "4A90D9"))
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 4)
 
             Circle()
                 .fill(syncManager.connectedDevice != nil ? Color.green : Color.red)
@@ -98,33 +126,114 @@ struct ContentView: View {
         .frame(height: 44)
     }
 
+    private var logPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("\(appLog.entries.count) log entries")
+                    .font(.system(size: 12))
+                    .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+
+                Spacer()
+
+                Button("Copy All") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(appLog.allText(), forType: .string)
+                }
+                .font(.system(size: 12))
+                .buttonStyle(.plain)
+                .foregroundColor(Color(hex: "4A90D9"))
+
+                Button("Clear") {
+                    appLog.clear()
+                }
+                .font(.system(size: 12))
+                .foregroundColor(.red)
+                .buttonStyle(.plain)
+                .padding(.leading, 8)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(appLog.entries.enumerated()), id: \.offset) { idx, entry in
+                            Text(entry)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(
+                                    entry.contains("ERROR") || entry.contains("FAILED") || entry.contains("TIMEOUT") ? .red :
+                                    entry.contains("Connected") || entry.contains("pong OK") ? .green :
+                                    (colorScheme == .dark ? Color(hex: "CCCCCC") : Color(hex: "333333"))
+                                )
+                                .textSelection(.enabled)
+                                .id(idx)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                }
+                .onChange(of: appLog.entries.count) { _ in
+                    if let last = appLog.entries.indices.last {
+                        proxy.scrollTo(last, anchor: .bottom)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var editorArea: some View {
-        ZStack(alignment: .topLeading) {
-            if syncManager.clipboardText.isEmpty {
-                Text("Copy something on either device...")
-                    .foregroundColor(
-                        colorScheme == .dark
-                            ? Color(hex: "98989D").opacity(0.5)
-                            : Color(hex: "8E8E93").opacity(0.5)
-                    )
-                    .font(.system(size: 15))
-                    .padding(.top, 8)
-                    .padding(.leading, 5)
+        VStack(spacing: 0) {
+            if let imageData = syncManager.lastReceivedImage,
+               let nsImage = NSImage(data: imageData) {
+                VStack(spacing: 8) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 200)
+                        .cornerRadius(8)
+                        .onTapGesture {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setData(imageData, forType: .png)
+                            if let tiffData = nsImage.tiffRepresentation {
+                                NSPasteboard.general.setData(tiffData, forType: .tiff)
+                            }
+                            AppLog.add("[UI] Image copied to clipboard")
+                        }
+                    Text("Tap image to copy")
+                        .font(.system(size: 11))
+                        .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
             }
 
-            TextEditor(text: $syncManager.clipboardText)
-                .font(.system(size: 15))
-                .lineSpacing(6)
-                .scrollContentBackground(.hidden)
-                .background(Color.clear)
-                .foregroundColor(colorScheme == .dark ? Color(hex: "F2F2F7") : Color(hex: "1C1C1E"))
-                .onChange(of: syncManager.clipboardText) { newValue in
-                    syncManager.onTextEdited(newValue)
+            ZStack(alignment: .topLeading) {
+                if syncManager.clipboardText.isEmpty && syncManager.lastReceivedImage == nil {
+                    Text("Copy something on either device...")
+                        .foregroundColor(
+                            colorScheme == .dark
+                                ? Color(hex: "98989D").opacity(0.5)
+                                : Color(hex: "8E8E93").opacity(0.5)
+                        )
+                        .font(.system(size: 15))
+                        .padding(.top, 8)
+                        .padding(.leading, 5)
                 }
+
+                TextEditor(text: $syncManager.clipboardText)
+                    .font(.system(size: 15))
+                    .lineSpacing(6)
+                    .scrollContentBackground(.hidden)
+                    .background(Color.clear)
+                    .foregroundColor(colorScheme == .dark ? Color(hex: "F2F2F7") : Color(hex: "1C1C1E"))
+                    .onChange(of: syncManager.clipboardText) { newValue in
+                        syncManager.onTextEdited(newValue)
+                    }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var historyPanel: some View {

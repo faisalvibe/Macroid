@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
 import com.google.gson.Gson
+import com.macroid.util.AppLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -34,6 +35,7 @@ class Discovery(private val context: Context) {
     private var multicastLock: WifiManager.MulticastLock? = null
     private val gson = Gson()
     val fingerprint: String = UUID.randomUUID().toString().take(8)
+    var announcePort: Int = PORT
 
     private val deviceAlias: String = android.os.Build.MODEL ?: "Android"
 
@@ -43,7 +45,7 @@ class Discovery(private val context: Context) {
         "deviceModel" to (android.os.Build.MODEL ?: "Unknown"),
         "deviceType" to "mobile",
         "fingerprint" to fingerprint,
-        "port" to PORT,
+        "port" to announcePort,
         "protocol" to "http",
         "download" to false
     )
@@ -58,6 +60,8 @@ class Discovery(private val context: Context) {
         multicastLock?.setReferenceCounted(true)
         multicastLock?.acquire()
         Log.d(TAG, "Multicast lock acquired, starting discovery")
+        AppLog.add("[Discovery] Multicast lock acquired, starting discovery")
+        AppLog.add("[Discovery] Local fingerprint: $fingerprint, alias: $deviceAlias")
 
         listenJob = scope.launch {
             listenForDevices(onDeviceFound)
@@ -85,9 +89,11 @@ class Discovery(private val context: Context) {
             if (networkInterface != null) {
                 socket.networkInterface = networkInterface
                 Log.d(TAG, "Using network interface: ${networkInterface.displayName}")
+                AppLog.add("[Discovery] Using network interface: ${networkInterface.displayName}")
             }
             socket.joinGroup(java.net.InetSocketAddress(group, PORT), networkInterface)
             Log.d(TAG, "Joined multicast group $MULTICAST_GROUP:$PORT")
+            AppLog.add("[Discovery] Joined multicast group $MULTICAST_GROUP:$PORT")
 
             val buffer = ByteArray(4096)
 
@@ -118,6 +124,7 @@ class Discovery(private val context: Context) {
                         port = port
                     )
                     Log.d(TAG, "Found device via multicast: ${device.alias} at ${device.address}:${device.port}")
+                    AppLog.add("[Discovery] Found device via multicast: ${device.alias} at ${device.address}:${device.port}")
                     onDeviceFound(device)
 
                     // If this is an announcement, respond via HTTP register
@@ -128,6 +135,7 @@ class Discovery(private val context: Context) {
                     // Normal timeout, keep listening
                 } catch (e: Exception) {
                     Log.w(TAG, "Error receiving multicast packet", e)
+                    AppLog.add("[Discovery] ERROR receiving multicast: ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
 
@@ -135,6 +143,7 @@ class Discovery(private val context: Context) {
             socket.close()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to set up multicast listener", e)
+            AppLog.add("[Discovery] ERROR: Failed to set up multicast listener: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -153,9 +162,11 @@ class Discovery(private val context: Context) {
 
             val responseCode = connection.responseCode
             Log.d(TAG, "Register response to $targetAddress: $responseCode")
+            AppLog.add("[Discovery] Register response to $targetAddress: HTTP $responseCode")
             connection.disconnect()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to respond via register to $targetAddress", e)
+            AppLog.add("[Discovery] Register to $targetAddress FAILED: ${e.javaClass.simpleName}: ${e.message}")
             // Fallback: send multicast with announce=false
             try {
                 val socket = MulticastSocket(PORT)
@@ -185,6 +196,7 @@ class Discovery(private val context: Context) {
             val bytes = json.toByteArray()
 
             // LocalSend-style burst: 0ms, 100ms, 500ms, 2000ms
+            AppLog.add("[Discovery] Sending burst announcements to $MULTICAST_GROUP:$PORT")
             val burstDelays = longArrayOf(0, 100, 500, 2000)
             for (d in burstDelays) {
                 if (d > 0) delay(d)
@@ -193,8 +205,10 @@ class Discovery(private val context: Context) {
                     socket.send(packet)
                 } catch (e: Exception) {
                     Log.w(TAG, "Burst announcement failed", e)
+                    AppLog.add("[Discovery] Burst announcement FAILED: ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
+            AppLog.add("[Discovery] Burst announcements sent")
 
             // Then periodic announcements every 5 seconds
             while (announceJob?.isActive == true) {
@@ -210,6 +224,7 @@ class Discovery(private val context: Context) {
             socket.close()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to set up announce socket", e)
+            AppLog.add("[Discovery] ERROR: Failed to set up announce socket: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -217,6 +232,7 @@ class Discovery(private val context: Context) {
         val localIP = getLocalIPAddress() ?: return
         val subnet = localIP.split(".").take(3).joinToString(".")
         Log.d(TAG, "Starting fallback subnet scan on $subnet.0/24")
+        AppLog.add("[Discovery] Starting fallback subnet scan on $subnet.0/24")
 
         val scanJobs = mutableListOf<Job>()
         for (i in 1..254) {
@@ -228,6 +244,7 @@ class Discovery(private val context: Context) {
                 val device = tryInfoEndpoint(ip) ?: tryPingEndpoint(ip)
                 if (device != null) {
                     Log.d(TAG, "Fallback found device at $ip: ${device.alias}")
+                    AppLog.add("[Discovery] Fallback scan found device at $ip: ${device.alias}")
                     onDeviceFound(device)
                 }
             }
@@ -240,53 +257,62 @@ class Discovery(private val context: Context) {
         }
         scanJobs.forEach { it.join() }
         Log.d(TAG, "Fallback subnet scan completed")
+        AppLog.add("[Discovery] Fallback subnet scan completed")
     }
 
     private fun tryInfoEndpoint(ip: String): DeviceInfo? {
-        return try {
-            val url = URL("http://$ip:$PORT/api/localsend/v2/info")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 500
-            connection.readTimeout = 1000
-            connection.requestMethod = "GET"
-            val response = connection.inputStream.bufferedReader().readText()
-            connection.disconnect()
+        val portsToTry = listOf(PORT, PORT + 1, PORT + 2)
+        for (port in portsToTry) {
+            try {
+                val url = URL("http://$ip:$port/api/localsend/v2/info")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.connectTimeout = 500
+                connection.readTimeout = 1000
+                connection.requestMethod = "GET"
+                val response = connection.inputStream.bufferedReader().readText()
+                connection.disconnect()
 
-            val info = gson.fromJson(response, Map::class.java)
-            val fp = info["fingerprint"] as? String ?: return null
-            if (fp == fingerprint) return null
-            val deviceType = info["deviceType"] as? String ?: "unknown"
-            if (deviceType == "mobile") return null
+                val info = gson.fromJson(response, Map::class.java)
+                val fp = info["fingerprint"] as? String ?: continue
+                if (fp == fingerprint) continue
+                val deviceType = info["deviceType"] as? String ?: "unknown"
+                if (deviceType == "mobile") continue
 
-            DeviceInfo(
-                alias = info["alias"] as? String ?: ip,
-                deviceType = deviceType,
-                fingerprint = fp,
-                address = ip,
-                port = (info["port"] as? Double)?.toInt() ?: PORT
-            )
-        } catch (_: Exception) { null }
+                return DeviceInfo(
+                    alias = info["alias"] as? String ?: ip,
+                    deviceType = deviceType,
+                    fingerprint = fp,
+                    address = ip,
+                    port = (info["port"] as? Double)?.toInt() ?: port
+                )
+            } catch (_: Exception) { }
+        }
+        return null
     }
 
     private fun tryPingEndpoint(ip: String): DeviceInfo? {
-        return try {
-            val url = URL("http://$ip:$PORT/api/ping")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 500
-            connection.readTimeout = 1000
-            connection.requestMethod = "GET"
-            val response = connection.inputStream.bufferedReader().readText()
-            connection.disconnect()
-            if (response == "pong") {
-                DeviceInfo(
-                    alias = ip,
-                    deviceType = "desktop",
-                    fingerprint = "scan-$ip",
-                    address = ip,
-                    port = PORT
-                )
-            } else null
-        } catch (_: Exception) { null }
+        val portsToTry = listOf(PORT, PORT + 1, PORT + 2)
+        for (port in portsToTry) {
+            try {
+                val url = URL("http://$ip:$port/api/ping")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.connectTimeout = 500
+                connection.readTimeout = 1000
+                connection.requestMethod = "GET"
+                val response = connection.inputStream.bufferedReader().readText()
+                connection.disconnect()
+                if (response == "pong") {
+                    return DeviceInfo(
+                        alias = ip,
+                        deviceType = "desktop",
+                        fingerprint = "scan-$ip",
+                        address = ip,
+                        port = port
+                    )
+                }
+            } catch (_: Exception) { }
+        }
+        return null
     }
 
     fun getLocalIPAddress(): String? {
@@ -320,5 +346,6 @@ class Discovery(private val context: Context) {
         fallbackScanJob?.cancel()
         multicastLock?.release()
         Log.d(TAG, "Discovery stopped")
+        AppLog.add("[Discovery] Stopped")
     }
 }

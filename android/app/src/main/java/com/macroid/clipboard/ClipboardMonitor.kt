@@ -12,6 +12,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.macroid.util.AppLog
 import java.io.ByteArrayOutputStream
 
 class ClipboardMonitor(private val context: Context) {
@@ -47,6 +48,10 @@ class ClipboardMonitor(private val context: Context) {
                         }
                         continue
                     }
+
+                    // If clipboard has a URI (e.g., our own image), skip text detection
+                    // to avoid syncing empty string when image was just written
+                    if (hasClipboardUri()) continue
 
                     val current = getCurrentClipboard()
                     if (current != lastText) {
@@ -84,8 +89,10 @@ class ClipboardMonitor(private val context: Context) {
             val clip = ClipData.newUri(context.contentResolver, "Macroid Image", uri)
             clipboardManager.setPrimaryClip(clip)
             Log.d(TAG, "Wrote remote image to clipboard (${imageBytes.size} bytes)")
+            AppLog.add("[Clipboard] Wrote image to clipboard (${imageBytes.size} bytes) via $uri")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to write image to clipboard", e)
+            AppLog.add("[Clipboard] ERROR writing image: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -100,12 +107,24 @@ class ClipboardMonitor(private val context: Context) {
         }
     }
 
+    private fun hasClipboardUri(): Boolean {
+        return try {
+            if (!clipboardManager.hasPrimaryClip()) false
+            else clipboardManager.primaryClip?.getItemAt(0)?.uri != null
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private fun getCurrentImage(): ByteArray? {
         return try {
             if (!clipboardManager.hasPrimaryClip()) return null
             val clip = clipboardManager.primaryClip ?: return null
             val item = clip.getItemAt(0) ?: return null
             val uri = item.uri ?: return null
+
+            // Skip our own FileProvider URIs - these are echoes from writeImageToClipboard
+            if (uri.authority == "${context.packageName}.fileprovider") return null
 
             val mimeType = context.contentResolver.getType(uri) ?: return null
             if (!mimeType.startsWith("image/")) return null

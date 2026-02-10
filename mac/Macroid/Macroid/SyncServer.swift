@@ -18,22 +18,28 @@ class SyncServer {
     private(set) var actualPort: UInt16
     var deviceInfoProvider: (() -> [String: Any])?
     var onDeviceRegistered: ((DeviceInfo) -> Void)?
+    var onPeerActivity: ((String) -> Void)?
 
     init(fingerprint: String) {
         self.deviceFingerprint = fingerprint
         self.actualPort = Discovery.port
     }
 
+    var onReady: (() -> Void)?
+
     func start(onClipboardReceived: @escaping (String) -> Void, onImageReceived: @escaping (Data) -> Void = { _ in }) {
         self.onClipboardReceived = onClipboardReceived
         self.onImageReceived = onImageReceived
+        startOnPort(port)
+    }
 
+    private func startOnPort(_ targetPort: UInt16) {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
 
-            guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-                log.error("Invalid port number: \(self.port)")
+            guard let nwPort = NWEndpoint.Port(rawValue: targetPort) else {
+                log.error("Invalid port number: \(targetPort)")
                 return
             }
             listener = try NWListener(using: params, on: nwPort)
@@ -43,12 +49,28 @@ class SyncServer {
             }
 
             listener?.stateUpdateHandler = { [weak self] state in
+                guard let self = self else { return }
                 switch state {
                 case .ready:
-                    self?.actualPort = self?.port ?? Discovery.port
-                    log.info("Server listening on port \(self?.port ?? 0)")
+                    self.actualPort = targetPort
+                    AppLog.add("[SyncServer] Listening on port \(targetPort)")
+                    log.info("Server listening on port \(targetPort)")
+                    self.onReady?()
                 case .failed(let error):
-                    log.error("Server failed: \(error.localizedDescription)")
+                    AppLog.add("[SyncServer] ERROR on port \(targetPort): \(error.localizedDescription)")
+                    log.error("Server failed on port \(targetPort): \(error.localizedDescription)")
+                    self.listener?.cancel()
+                    self.listener = nil
+                    // Try alternate ports if the primary port failed
+                    if targetPort == self.port {
+                        AppLog.add("[SyncServer] Trying alternate port \(self.port + 1)...")
+                        self.startOnPort(self.port + 1)
+                    } else if targetPort == self.port + 1 {
+                        AppLog.add("[SyncServer] Trying alternate port \(self.port + 2)...")
+                        self.startOnPort(self.port + 2)
+                    } else {
+                        AppLog.add("[SyncServer] ERROR: All ports failed, server not running")
+                    }
                 default:
                     break
                 }
@@ -56,38 +78,15 @@ class SyncServer {
 
             listener?.start(queue: queue)
         } catch {
-            log.error("Failed to start on port \(self.port): \(error.localizedDescription)")
-            tryAlternatePort(onClipboardReceived: onClipboardReceived)
-        }
-    }
-
-    private func tryAlternatePort(onClipboardReceived: @escaping (String) -> Void) {
-        do {
-            let params = NWParameters.tcp
-            params.allowLocalEndpointReuse = true
-            guard let altPort = NWEndpoint.Port(rawValue: port + 1) else {
-                log.error("Invalid alternate port number: \(self.port + 1)")
-                return
-            }
-            listener = try NWListener(using: params, on: altPort)
-            listener?.newConnectionHandler = { [weak self] connection in
-                self?.handleConnection(connection)
-            }
-            listener?.stateUpdateHandler = { [weak self] state in
-                if case .ready = state {
-                    self?.actualPort = (self?.port ?? Discovery.port) + 1
-                    log.info("Server listening on alternate port \((self?.port ?? 0) + 1)")
-                }
-            }
-            listener?.start(queue: queue)
-        } catch {
-            log.error("Failed to start on alternate port: \(error.localizedDescription)")
+            AppLog.add("[SyncServer] ERROR creating listener on port \(targetPort): \(error.localizedDescription)")
+            log.error("Failed to create listener on port \(targetPort): \(error.localizedDescription)")
         }
     }
 
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
 
+        // Read initial chunk (headers + start of body)
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self, let data = data else {
                 connection.cancel()
@@ -100,8 +99,71 @@ class SyncServer {
                 return
             }
 
+            // Parse Content-Length to check if we need to read more data
             let request = String(data: data, encoding: .utf8) ?? ""
-            self.routeRequest(request, connection: connection)
+            guard let headerEnd = request.range(of: "\r\n\r\n") else {
+                self.routeRequest(request, connection: connection)
+                return
+            }
+
+            let headerPart = String(request[request.startIndex..<headerEnd.lowerBound])
+            let bodyPart = String(request[headerEnd.upperBound...])
+
+            // Extract Content-Length
+            var contentLength = 0
+            for line in headerPart.components(separatedBy: "\r\n") {
+                if line.lowercased().hasPrefix("content-length:") {
+                    let value = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+                    contentLength = Int(value) ?? 0
+                    break
+                }
+            }
+
+            let bodyReceived = bodyPart.utf8.count
+            if contentLength <= 0 || bodyReceived >= contentLength {
+                self.routeRequest(request, connection: connection)
+            } else {
+                // Need to read more data for the full body (e.g. large images)
+                AppLog.add("[SyncServer] Body incomplete (\(bodyReceived)/\(contentLength) bytes), buffering...")
+                self.readRemainingBody(connection: connection, headerPart: headerPart, bodySoFar: Data(bodyPart.utf8), totalNeeded: contentLength)
+            }
+        }
+    }
+
+    private func readRemainingBody(connection: NWConnection, headerPart: String, bodySoFar: Data, totalNeeded: Int) {
+        let remaining = totalNeeded - bodySoFar.count
+        if remaining <= 0 {
+            let bodyString = String(data: bodySoFar, encoding: .utf8) ?? ""
+            let fullRequest = headerPart + "\r\n\r\n" + bodyString
+            self.routeRequest(fullRequest, connection: connection)
+            return
+        }
+
+        let chunkSize = min(remaining, 1_048_576)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: chunkSize) { [weak self] data, _, isComplete, error in
+            guard let self = self else {
+                connection.cancel()
+                return
+            }
+
+            if let data = data, !data.isEmpty {
+                var accumulated = bodySoFar
+                accumulated.append(data)
+
+                if accumulated.count >= totalNeeded {
+                    let bodyString = String(data: accumulated, encoding: .utf8) ?? ""
+                    let fullRequest = headerPart + "\r\n\r\n" + bodyString
+                    self.routeRequest(fullRequest, connection: connection)
+                } else {
+                    self.readRemainingBody(connection: connection, headerPart: headerPart, bodySoFar: accumulated, totalNeeded: totalNeeded)
+                }
+            } else {
+                // Connection closed or error - route what we have
+                AppLog.add("[SyncServer] Connection ended with \(bodySoFar.count)/\(totalNeeded) bytes")
+                let bodyString = String(data: bodySoFar, encoding: .utf8) ?? ""
+                let fullRequest = headerPart + "\r\n\r\n" + bodyString
+                self.routeRequest(fullRequest, connection: connection)
+            }
         }
     }
 
@@ -178,7 +240,7 @@ class SyncServer {
                 let deviceType = json["deviceType"] as? String ?? "unknown"
                 let port = json["port"] as? Int ?? Int(Discovery.port)
 
-                if !fp.isEmpty && fp != deviceFingerprint && deviceType == "mobile" {
+                if !fp.isEmpty && fp != deviceFingerprint {
                     // Extract remote IP from connection
                     var remoteAddress = "unknown"
                     if case .hostPort(let host, _) = connection.currentPath?.remoteEndpoint {
@@ -240,6 +302,13 @@ class SyncServer {
         if !text.isEmpty && timestamp > lastTimestamp {
             lastTimestamp = timestamp
             lastClipboard = text
+            // Notify about peer activity for auto-connection
+            if let endpoint = connection.currentPath?.remoteEndpoint,
+               case .hostPort(let host, _) = endpoint {
+                let remoteAddress = "\(host)"
+                AppLog.add("[SyncServer] Received clipboard (\(text.count) chars) from \(remoteAddress)")
+                onPeerActivity?(remoteAddress)
+            }
             log.info("Received clipboard (\(text.count) chars) from origin=\(origin)")
             onClipboardReceived?(text)
         }

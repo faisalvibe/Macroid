@@ -81,8 +81,12 @@ class ClipboardMonitor {
         lastRemoteImageHash = imageData.hashValue
         lock.unlock()
         pasteboard.clearContents()
-        if let image = NSImage(data: imageData) {
-            pasteboard.writeObjects([image])
+        // Write PNG data directly for maximum compatibility with Cmd+V paste
+        pasteboard.setData(imageData, forType: .png)
+        // Also write as TIFF for apps that prefer it
+        if let image = NSImage(data: imageData),
+           let tiffData = image.tiffRepresentation {
+            pasteboard.setData(tiffData, forType: .tiff)
         }
         lastChangeCount = pasteboard.changeCount
         log.debug("Wrote remote image to clipboard (\(imageData.count) bytes)")
@@ -100,6 +104,21 @@ class ClipboardMonitor {
            let tiffData = pasteboard.data(forType: .tiff),
            let bitmapRep = NSBitmapImageRep(data: tiffData) {
             return bitmapRep.representation(using: .png, properties: [:])
+        }
+        // Check for file URLs pointing to image files
+        if pasteboard.types?.contains(.fileURL) == true,
+           let urlString = pasteboard.string(forType: .fileURL),
+           let url = URL(string: urlString) {
+            let ext = url.pathExtension.lowercased()
+            if ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp", "heic"].contains(ext) {
+                if let data = try? Data(contentsOf: url) {
+                    if let image = NSImage(data: data),
+                       let tiffRep = image.tiffRepresentation,
+                       let bitmapRep = NSBitmapImageRep(data: tiffRep) {
+                        return bitmapRep.representation(using: .png, properties: [:])
+                    }
+                }
+            }
         }
         return nil
     }
