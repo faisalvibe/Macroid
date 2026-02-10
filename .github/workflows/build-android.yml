@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,8 +42,57 @@ jobs:
           name: macroid-release
           path: android/app/build/outputs/apk/release/app-release.apk
 
+  build-mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          elif [ -d "/Applications/Xcode_15.2.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.2.app
+          else
+            echo "Using default Xcode"
+          fi
+
+      - name: Build macOS App
+        working-directory: mac/Macroid
+        run: |
+          xcodebuild -project Macroid.xcodeproj \
+            -scheme Macroid \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Create DMG
+        working-directory: mac/Macroid
+        run: |
+          APP_PATH="build/Build/Products/Release/Macroid.app"
+          DMG_PATH="Macroid.dmg"
+          mkdir -p dmg_contents
+          cp -R "$APP_PATH" dmg_contents/
+          ln -s /Applications dmg_contents/Applications
+          hdiutil create -volname "Macroid" -srcfolder dmg_contents -ov -format UDZO "$DMG_PATH"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macroid-macos
+          path: mac/Macroid/Macroid.dmg
+
+      - name: Upload App
+        uses: actions/upload-artifact@v4
+        with:
+          name: macroid-macos-app
+          path: mac/Macroid/build/Build/Products/Release/Macroid.app
+
   release:
-    needs: build
+    needs: [build-android, build-mac]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
@@ -69,6 +118,11 @@ jobs:
         with:
           name: macroid-release
 
+      - name: Download macOS DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: macroid-macos
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,5 +133,5 @@ jobs:
           if gh release view "$TAG" &>/dev/null; then
             echo "Release $TAG already exists, skipping"
           else
-            gh release create "$TAG" --title "Macroid $TAG" --generate-notes Macroid-debug.apk Macroid-release.apk
+            gh release create "$TAG" --title "Macroid $TAG" --generate-notes Macroid-debug.apk Macroid-release.apk Macroid.dmg
           fi
