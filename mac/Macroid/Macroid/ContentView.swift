@@ -172,32 +172,55 @@ struct ContentView: View {
     }
 
     private var editorArea: some View {
-        ZStack(alignment: .topLeading) {
-            if syncManager.clipboardText.isEmpty {
-                Text("Copy something on either device...")
-                    .foregroundColor(
-                        colorScheme == .dark
-                            ? Color(hex: "98989D").opacity(0.5)
-                            : Color(hex: "8E8E93").opacity(0.5)
-                    )
-                    .font(.system(size: 15))
-                    .padding(.top, 8)
-                    .padding(.leading, 5)
+        VStack(spacing: 0) {
+            if let imageData = syncManager.lastReceivedImage,
+               let nsImage = NSImage(data: imageData) {
+                VStack(spacing: 8) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 200)
+                        .cornerRadius(8)
+                        .onTapGesture {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.writeObjects([nsImage])
+                            AppLog.add("[UI] Image copied to clipboard")
+                        }
+                    Text("Tap image to copy")
+                        .font(.system(size: 11))
+                        .foregroundColor(colorScheme == .dark ? Color(hex: "98989D") : Color(hex: "8E8E93"))
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
             }
 
-            TextEditor(text: $syncManager.clipboardText)
-                .font(.system(size: 15))
-                .lineSpacing(6)
-                .scrollContentBackground(.hidden)
-                .background(Color.clear)
-                .foregroundColor(colorScheme == .dark ? Color(hex: "F2F2F7") : Color(hex: "1C1C1E"))
-                .onChange(of: syncManager.clipboardText) { newValue in
-                    syncManager.onTextEdited(newValue)
+            ZStack(alignment: .topLeading) {
+                if syncManager.clipboardText.isEmpty && syncManager.lastReceivedImage == nil {
+                    Text("Copy something on either device...")
+                        .foregroundColor(
+                            colorScheme == .dark
+                                ? Color(hex: "98989D").opacity(0.5)
+                                : Color(hex: "8E8E93").opacity(0.5)
+                        )
+                        .font(.system(size: 15))
+                        .padding(.top, 8)
+                        .padding(.leading, 5)
                 }
+
+                TextEditor(text: $syncManager.clipboardText)
+                    .font(.system(size: 15))
+                    .lineSpacing(6)
+                    .scrollContentBackground(.hidden)
+                    .background(Color.clear)
+                    .foregroundColor(colorScheme == .dark ? Color(hex: "F2F2F7") : Color(hex: "1C1C1E"))
+                    .onChange(of: syncManager.clipboardText) { newValue in
+                        syncManager.onTextEdited(newValue)
+                    }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var historyPanel: some View {

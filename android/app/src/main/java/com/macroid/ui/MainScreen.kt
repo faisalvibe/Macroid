@@ -1,22 +1,29 @@
 package com.macroid.ui
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -53,6 +60,7 @@ fun MainScreen(
     clipboardHistory: List<String>,
     localIP: String,
     connectionStatus: String,
+    lastReceivedImage: ByteArray? = null,
     onTextChanged: (String) -> Unit,
     onHistoryItemClicked: (String) -> Unit,
     onClearHistory: () -> Unit,
@@ -93,33 +101,86 @@ fun MainScreen(
                 LogPanel(modifier = Modifier.weight(1f))
             }
             else -> {
-                Box(
+                Column(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 16.dp)
                 ) {
-                    if (clipboardText.isEmpty()) {
-                        Text(
-                            text = "Copy something on either device...",
-                            style = TextStyle(
-                                fontSize = 16.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                            )
-                        )
+                    // Image preview
+                    if (lastReceivedImage != null) {
+                        val bitmap = remember(lastReceivedImage) {
+                            BitmapFactory.decodeByteArray(lastReceivedImage, 0, lastReceivedImage.size)
+                        }
+                        if (bitmap != null) {
+                            val clipboardManager = LocalClipboardManager.current
+                            val context = androidx.compose.ui.platform.LocalContext.current
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 24.dp, vertical = 8.dp),
+                                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                            ) {
+                                Image(
+                                    bitmap = bitmap.asImageBitmap(),
+                                    contentDescription = "Synced image",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 200.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            // Copy image to clipboard
+                                            val file = java.io.File(context.cacheDir, "macroid_share.png")
+                                            file.writeBytes(lastReceivedImage)
+                                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                                context, "${context.packageName}.fileprovider", file
+                                            )
+                                            val clip = android.content.ClipData.newUri(context.contentResolver, "Macroid Image", uri)
+                                            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                            cm.setPrimaryClip(clip)
+                                            AppLog.add("[UI] Image copied to clipboard")
+                                        },
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                                )
+                                Text(
+                                    text = "Tap image to copy",
+                                    style = TextStyle(
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                    ),
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        }
                     }
 
-                    BasicTextField(
-                        value = clipboardText,
-                        onValueChange = onTextChanged,
-                        modifier = Modifier.fillMaxSize(),
-                        textStyle = TextStyle(
-                            fontSize = 16.sp,
-                            lineHeight = 24.sp,
-                            color = MaterialTheme.colorScheme.onBackground
-                        ),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 8.dp)
+                    ) {
+                        if (clipboardText.isEmpty() && lastReceivedImage == null) {
+                            Text(
+                                text = "Copy something on either device...",
+                                style = TextStyle(
+                                    fontSize = 16.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                )
+                            )
+                        }
+
+                        BasicTextField(
+                            value = clipboardText,
+                            onValueChange = onTextChanged,
+                            modifier = Modifier.fillMaxSize(),
+                            textStyle = TextStyle(
+                                fontSize = 16.sp,
+                                lineHeight = 24.sp,
+                                color = MaterialTheme.colorScheme.onBackground
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
+                        )
+                    }
                 }
             }
         }

@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.google.gson.Gson
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -38,6 +39,7 @@ fun MacroidApp() {
         var connectedDevice by remember { mutableStateOf<DeviceInfo?>(null) }
         var isSearching by remember { mutableStateOf(true) }
         var connectionStatus by remember { mutableStateOf("") }
+        var lastReceivedImage by remember { mutableStateOf<ByteArray?>(null) }
         val clipboardHistory = remember { mutableStateListOf<String>() }
 
         val discovery = remember { Discovery(context) }
@@ -80,18 +82,24 @@ fun MacroidApp() {
 
             syncServer.onPeerActivity = { address, port ->
                 if (connectedDevice == null) {
-                    val device = DeviceInfo(
-                        alias = address,
-                        deviceType = "desktop",
-                        fingerprint = "peer-$address",
-                        address = address,
-                        port = port
-                    )
-                    CoroutineScope(Dispatchers.Main).launch {
-                        connectedDevice = device
-                        isSearching = false
-                        syncClient.setPeer(device)
-                        AppLog.add("[MacroidApp] Peer detected via clipboard: $address")
+                    // Try to fetch the device's info for name
+                    CoroutineScope(Dispatchers.IO).launch {
+                        val info = fetchDeviceInfo(address, port)
+                        val alias = info?.get("alias") as? String ?: address
+                        val peerPort = (info?.get("port") as? Double)?.toInt() ?: port
+                        CoroutineScope(Dispatchers.Main).launch {
+                            val device = DeviceInfo(
+                                alias = alias,
+                                deviceType = "desktop",
+                                fingerprint = "peer-$address",
+                                address = address,
+                                port = peerPort
+                            )
+                            connectedDevice = device
+                            isSearching = false
+                            syncClient.setPeer(device)
+                            AppLog.add("[MacroidApp] Peer detected: $alias at $address:$peerPort")
+                        }
                     }
                 }
             }
@@ -109,12 +117,17 @@ fun MacroidApp() {
                     AppLog.add("[MacroidApp] Received remote clipboard (${incomingText.length} chars)")
                 }
             }, onImageReceived = { imageBytes ->
+                lastReceivedImage = imageBytes
                 clipboardMonitor.writeImageToClipboard(imageBytes)
                 AppLog.add("[MacroidApp] Received remote image (${imageBytes.size} bytes)")
             })
 
             discovery.startDiscovery { device ->
                 onDeviceFound(device)
+                // Register with the discovered device so it knows about us
+                CoroutineScope(Dispatchers.IO).launch {
+                    registerWithPeer(device.address, device.port, discovery)
+                }
             }
 
             AppLog.add("[MacroidApp] Discovery started")
@@ -126,6 +139,7 @@ fun MacroidApp() {
                     addToHistory(clipboardHistory, newText, prefs)
                 }
             }, onImageChanged = { imageBytes ->
+                lastReceivedImage = imageBytes
                 syncClient.sendImage(imageBytes)
             })
 
@@ -162,6 +176,7 @@ fun MacroidApp() {
             clipboardHistory = clipboardHistory,
             localIP = localIP,
             connectionStatus = connectionStatus,
+            lastReceivedImage = lastReceivedImage,
             onTextChanged = { newText ->
                 clipboardText = newText
                 clipboardMonitor.writeToClipboard(newText)
@@ -192,12 +207,23 @@ fun MacroidApp() {
                         )
                         val reachable = pingDevice(device)
                         if (reachable) {
+                            // Fetch device name and register
+                            val info = fetchDeviceInfo(ip, port)
+                            val alias = info?.get("alias") as? String ?: ip
+                            registerWithPeer(ip, port, discovery)
                             CoroutineScope(Dispatchers.Main).launch {
-                                connectedDevice = device
+                                val namedDevice = DeviceInfo(
+                                    alias = alias,
+                                    deviceType = "desktop",
+                                    fingerprint = "manual",
+                                    address = ip,
+                                    port = port
+                                )
+                                connectedDevice = namedDevice
                                 isSearching = false
-                                syncClient.setPeer(device)
-                                connectionStatus = "Connected to $ip:$port"
-                                AppLog.add("[MacroidApp] Connected to $ip:$port")
+                                syncClient.setPeer(namedDevice)
+                                connectionStatus = "Connected to $alias"
+                                AppLog.add("[MacroidApp] Connected to $alias ($ip:$port)")
                             }
                             connected = true
                             break
@@ -232,6 +258,44 @@ private fun pingDevice(device: DeviceInfo): Boolean {
     } catch (e: Exception) {
         AppLog.add("[Ping] FAILED to ${device.address}: ${e.javaClass.simpleName}: ${e.message}")
         false
+    }
+}
+
+private fun fetchDeviceInfo(address: String, port: Int): Map<*, *>? {
+    val portsToTry = listOf(port, Discovery.PORT, Discovery.PORT + 1, Discovery.PORT + 2).distinct()
+    for (p in portsToTry) {
+        try {
+            val url = URL("http://$address:$p/api/localsend/v2/info")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.connectTimeout = 2000
+            connection.readTimeout = 2000
+            connection.requestMethod = "GET"
+            val response = connection.inputStream.bufferedReader().readText()
+            connection.disconnect()
+            return Gson().fromJson(response, Map::class.java)
+        } catch (_: Exception) { }
+    }
+    return null
+}
+
+private fun registerWithPeer(address: String, port: Int, discovery: Discovery) {
+    val portsToTry = listOf(port, Discovery.PORT, Discovery.PORT + 1, Discovery.PORT + 2).distinct()
+    for (p in portsToTry) {
+        try {
+            val url = URL("http://$address:$p/api/localsend/v2/register")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.connectTimeout = 2000
+            connection.readTimeout = 2000
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.doOutput = true
+            val body = Gson().toJson(discovery.getDeviceInfo())
+            connection.outputStream.write(body.toByteArray())
+            connection.responseCode
+            connection.disconnect()
+            AppLog.add("[MacroidApp] Register sent to $address:$p")
+            return
+        } catch (_: Exception) { }
     }
 }
 

@@ -18,6 +18,7 @@ class SyncServer {
     private(set) var actualPort: UInt16
     var deviceInfoProvider: (() -> [String: Any])?
     var onDeviceRegistered: ((DeviceInfo) -> Void)?
+    var onPeerActivity: ((String) -> Void)?
 
     init(fingerprint: String) {
         self.deviceFingerprint = fingerprint
@@ -175,7 +176,7 @@ class SyncServer {
                 let deviceType = json["deviceType"] as? String ?? "unknown"
                 let port = json["port"] as? Int ?? Int(Discovery.port)
 
-                if !fp.isEmpty && fp != deviceFingerprint && deviceType == "mobile" {
+                if !fp.isEmpty && fp != deviceFingerprint {
                     // Extract remote IP from connection
                     var remoteAddress = "unknown"
                     if case .hostPort(let host, _) = connection.currentPath?.remoteEndpoint {
@@ -237,6 +238,13 @@ class SyncServer {
         if !text.isEmpty && timestamp > lastTimestamp {
             lastTimestamp = timestamp
             lastClipboard = text
+            // Notify about peer activity for auto-connection
+            if let endpoint = connection.currentPath?.remoteEndpoint,
+               case .hostPort(let host, _) = endpoint {
+                let remoteAddress = "\(host)"
+                AppLog.add("[SyncServer] Received clipboard (\(text.count) chars) from \(remoteAddress)")
+                onPeerActivity?(remoteAddress)
+            }
             log.info("Received clipboard (\(text.count) chars) from origin=\(origin)")
             onClipboardReceived?(text)
         }

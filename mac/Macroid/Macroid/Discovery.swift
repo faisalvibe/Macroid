@@ -242,7 +242,8 @@ class Discovery {
     }
 
     /// Raw TCP HTTP GET using NWConnection - bypasses ATS
-    private func rawHTTPGet(ip: String, port: UInt16, path: String, timeout: TimeInterval = 1.0) -> Data? {
+    /// Raw TCP HTTP GET using NWConnection - bypasses ATS
+    func rawHTTPGet(ip: String, port: UInt16, path: String, timeout: TimeInterval = 1.0) -> Data? {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { return nil }
         let semaphore = DispatchSemaphore(value: 0)
         var resultData: Data?

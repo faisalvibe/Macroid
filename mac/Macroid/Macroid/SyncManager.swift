@@ -23,6 +23,7 @@ class SyncManager: ObservableObject {
     @Published var clipboardHistory: [String] = []
     @Published var localIPAddress: String = ""
     @Published var connectionStatus: String = ""
+    @Published var lastReceivedImage: Data?
 
     private var discovery: Discovery?
     private var syncServer: SyncServer?
@@ -66,6 +67,34 @@ class SyncManager: ObservableObject {
             }
         }
 
+        server.onPeerActivity = { [weak self] remoteAddress in
+            guard let self = self, self.connectedDevice == nil else { return }
+            self.syncQueue.async {
+                let portsToTry: [UInt16] = [Discovery.port, Discovery.port + 1, Discovery.port + 2]
+                for port in portsToTry {
+                    if let data = disc.rawHTTPGet(ip: remoteAddress, port: port, path: "/api/localsend/v2/info"),
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        let alias = json["alias"] as? String ?? remoteAddress
+                        let peerPort = json["port"] as? Int ?? Int(port)
+                        let device = DeviceInfo(alias: alias, deviceType: "mobile", fingerprint: json["fingerprint"] as? String ?? "peer", address: remoteAddress, port: peerPort)
+                        DispatchQueue.main.async {
+                            self.connectedDevice = device
+                            self.syncClient = SyncClient(peer: device, fingerprint: fp)
+                            AppLog.add("[SyncManager] Peer detected: \(alias) at \(remoteAddress):\(peerPort)")
+                        }
+                        return
+                    }
+                }
+                // Fallback
+                let device = DeviceInfo(alias: remoteAddress, deviceType: "mobile", fingerprint: "peer", address: remoteAddress, port: Int(Discovery.port))
+                DispatchQueue.main.async {
+                    self.connectedDevice = device
+                    self.syncClient = SyncClient(peer: device, fingerprint: fp)
+                    AppLog.add("[SyncManager] Peer detected (no info): \(remoteAddress)")
+                }
+            }
+        }
+
         server.onReady = { [weak self] in
             guard let self = self, let disc = self.discovery, let server = self.syncServer else { return }
             let actualPort = server.actualPort
@@ -86,6 +115,7 @@ class SyncManager: ObservableObject {
         }, onImageReceived: { [weak self] imageData in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                self.lastReceivedImage = imageData
                 self.clipboardMonitor?.writeImageToClipboard(imageData)
                 AppLog.add("[SyncManager] Received remote image (\(imageData.count) bytes)")
             }
@@ -98,6 +128,8 @@ class SyncManager: ObservableObject {
                 self.connectedDevice = device
                 self.syncClient = SyncClient(peer: device, fingerprint: fp)
             }
+            // Register with the discovered device so it knows about us
+            self?.registerWithPeer(ip: device.address, port: UInt16(device.port))
         }
 
         clipboardMonitor = ClipboardMonitor()
@@ -112,6 +144,9 @@ class SyncManager: ObservableObject {
             }
         }, onImageChanged: { [weak self] imageData in
             guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.lastReceivedImage = imageData
+            }
             self.syncClient?.sendImage(imageData)
         })
 
